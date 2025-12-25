@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>My Web DAW</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
+    h1 { margin: 0 0 6px; }
+    .legend { margin: 8px 0 12px; color: #555; font-size: 14px; }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .toolbar input { width: 80px; }
+
+    .topbar, .pianoroll {
+      display: grid;
+      grid-template-columns: 70px 1fr;
+      gap: 8px;
+      align-items: start;
+      max-width: 980px;
+    }
+    .topbar { margin-bottom: 6px; }
+
+    .labels {
+      display: grid;
+      gap: 0;              /* ✅ 줄간격 없애서 그리드랑 일치 */
+      padding-top: 1px;    /* ✅ grid의 바깥 border(1px)만큼 맞춤 */
+      border: 1px solid #ddd;
+      border-right: none; /* 라벨-그리드 사이 중복 선 방지 */
+      border-radius: 4px 0 0 4px;
+      overflow: hidden;
+    }
+
+    .label {
+      height: 22px;
+      box-sizing: border-box;             /* ✅ border가 height 안에 포함되게 */
+      border-bottom: 1px solid #e6e6e6;   /* ✅ grid cell과 같은 가로 줄 */
+      border-radius: 0;                   /* ✅ 줄 정렬이 더 또렷해짐(원하면 다시 4px 줘도 됨) */
+    }
+
+
+    /* 타임라인 */
+    .timeline { display: grid; font-size: 12px; color: #333; }
+    .tick {
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f8f8f8;
+      border: 1px solid #e6e6e6;
+      border-left: none;
+    }
+    .tick:first-child { border-left: 1px solid #e6e6e6; }
+    .tick.bar { font-weight: 600; background: #f1f1f1; }
+
+    /* 그리드 + 노트 오버레이 */
+    .gridWrap {
+      position: relative;
+      width: fit-content;
+      touch-action: none;
+    }
+    .grid {
+      display: grid;
+      border: 1px solid #ddd;
+      background: #fff;
+    }
+    .cell {
+      width: 22px;
+      height: 22px;
+      border-right: 1px solid #e6e6e6;
+      border-bottom: 1px solid #e6e6e6;
+      cursor: pointer;
+      background: transparent;
+      user-select: none;
+    }
+    /* 마디 시작 (굵은 선) */
+    .cell.barline { border-left: 2px solid rgba(0,0,0,0.14); }
+    /* 박 시작 (연한 선) */
+    .cell.beatline { box-shadow: inset 1px 0 0 rgba(0,0,0,0.08); }
+
+    /* 노트 레이어 */
+    .notesLayer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .note {
+      position: absolute;
+      height: 22px;
+      border-radius: 4px;
+      background: #4a90e2;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.08) inset;
+    }
+    .note.editing {
+      box-shadow:
+        0 0 0 2px rgba(0,0,0,0.25) inset,
+        0 0 0 1px rgba(0,0,0,0.10);
+    }
+
+    button:focus { outline: none; }
+  </style>
+</head>
+
+<body>
+  <h1>My Web DAW</h1>
+  <div class="toolbar">
+    <button onclick="play()">재생</button>
+    <button onclick="stop()">정지</button>
+    <button onclick="exportMidi()">MIDI로 저장</button>
+    <button onclick="undo()">Undo</button>
+
+    <span style="margin-left:10px;">BPM</span>
+    <input id="bpm" type="number" min="30" max="240" step="1" value="90" />
+    <button onclick="applyBpm()">적용</button>
+
+    <button onclick="clearNotes()" style="margin-left:auto;">노트 전체 삭제</button>
+  </div>
+
+  <div class="legend">
+    16분 해상도(1박=4칸) · 4마디 · 클릭=생성(16분 1칸) · 드래그=길이 · 시작칸 클릭=삭제 · Cmd/Ctrl+Z=Undo
+  </div>
+
+  <div class="topbar">
+    <div></div>
+    <div id="timeline" class="timeline"></div>
+  </div>
+
+  <div class="pianoroll">
+    <div id="labels" class="labels"></div>
+
+    <div class="gridWrap" id="gridWrap">
+      <div id="grid" class="grid"></div>
+      <div id="notesLayer" class="notesLayer"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/tone/build/Tone.js"></script>
+  <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
+
+  <script>
+    // =========================
+    // 설정
+    // =========================
+    const CELL = 22;
+    const SUBDIV = 4; // 1박(4분) = 4칸 = 16분 해상도
+
+    // =========================
+    // 프로젝트 데이터
+    // =========================
+    const project = {
+      bpm: 90,
+      timeSignature: [4, 4],
+      bars: 4,
+      tracks: [{ name: "Piano", notes: [] }]
+    };
+
+    // =========================
+    // 피아노롤 설정
+    // =========================
+    const PITCH_MIN = 48; // C3
+    const PITCH_MAX = 71; // B4
+
+    const beatsPerBar = project.timeSignature[0]; // 4
+    const totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
+
+    const pitches = [];
+    for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
+
+    const pitchToRow = new Map();
+    pitches.forEach((p, i) => pitchToRow.set(p, i));
+
+    let nextNoteId = 1;
+
+    // =========================
+    // 시간 변환 (마디/16분 -> 초)
+    // =========================
+    function positionToSeconds(bar, beat16, bpm) {
+      const sixteenth = (60 / bpm) / SUBDIV;
+      return (bar - 1) * beatsPerBar * SUBDIV * sixteenth
+           + (beat16 - 1) * sixteenth;
+    }
+    function lengthToSeconds(length16, bpm) {
+      return length16 * (60 / bpm) / SUBDIV;
+    }
+
+    // =========================
+    // 위치 변환
+    // =========================
+    function posToCol(bar, beat16) {
+      return (bar - 1) * beatsPerBar * SUBDIV + (beat16 - 1);
+    }
+    function findNoteIndexAtStart(trackNotes, bar, beat16, pitch) {
+      return trackNotes.findIndex(n => n.bar === bar && n.beat === beat16 && n.pitch === pitch);
+    }
+
+    // 클릭한 col(0-base)이 기존 노트의 범위(start~end)에 포함되는지 찾기
+    function findNoteIndexCovering(trackNotes, col, pitch) {
+      return trackNotes.findIndex(n => {
+        if (n.pitch !== pitch) return false;
+        const startCol = posToCol(n.bar, n.beat);
+        const endCol = startCol + Math.max(1, n.length) - 1;
+        return col >= startCol && col <= endCol;
+    });
+  }
+
+
+    // =========================
+    // UI 엘리먼트
+    // =========================
+    const labelsEl = document.getElementById("labels");
+    const gridWrapEl = document.getElementById("gridWrap");
+    const gridEl = document.getElementById("grid");
+    const notesLayerEl = document.getElementById("notesLayer");
+    const timelineEl = document.getElementById("timeline");
+    const bpmEl = document.getElementById("bpm");
+
+    function midiToName(m) {
+      const names = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+      const name = names[m % 12];
+      const oct = Math.floor(m / 12) - 1;
+      return `${name}${oct}`;
+    }
+
+    function buildTimeline() {
+      timelineEl.style.gridTemplateColumns = `repeat(${totalCols}, ${CELL}px)`;
+      timelineEl.innerHTML = "";
+
+      for (let col = 0; col < totalCols; col++) {
+        const bar = Math.floor(col / (beatsPerBar * SUBDIV)) + 1;
+        const beat16 = (col % (beatsPerBar * SUBDIV)) + 1;
+
+        const tick = document.createElement("div");
+        tick.className = "tick";
+
+        // 1) 마디 첫 칸에는 마디 번호
+        // 2) 그 외에는 박(1~4)만 표시 (16분은 너무 복잡하니까)
+        if (beat16 === 1) {
+          tick.classList.add("bar");
+          tick.textContent = `${bar}`;
+        } else if ((beat16 - 1) % SUBDIV === 0) {
+          tick.textContent = `${((beat16 - 1) / SUBDIV) + 1}`; // 2,3,4 박
+        } else {
+          tick.textContent = "";
+        }
+
+        timelineEl.appendChild(tick);
+      }
+    }
+
+    function buildGrid() {
+      // 라벨
+      labelsEl.style.gridTemplateRows = `repeat(${pitches.length}, ${CELL}px)`;
+      labelsEl.innerHTML = "";
+      pitches.forEach(p => {
+        const div = document.createElement("div");
+        div.className = "label";
+        div.textContent = midiToName(p);
+        labelsEl.appendChild(div);
+      });
+
+      // 그리드
+      gridEl.style.gridTemplateColumns = `repeat(${totalCols}, ${CELL}px)`;
+      gridEl.style.gridTemplateRows = `repeat(${pitches.length}, ${CELL}px)`;
+      gridEl.innerHTML = "";
+
+      // 래퍼 크기
+      const width = totalCols * CELL + 2;
+      const height = pitches.length * CELL + 2;
+      gridWrapEl.style.width = `${width}px`;
+      gridWrapEl.style.height = `${height}px`;
+
+      for (let row = 0; row < pitches.length; row++) {
+        for (let col = 0; col < totalCols; col++) {
+          const cell = document.createElement("div");
+          cell.className = "cell";
+
+          const bar = Math.floor(col / (beatsPerBar * SUBDIV)) + 1;
+          const beat16 = (col % (beatsPerBar * SUBDIV)) + 1;
+          const pitch = pitches[row];
+
+          cell.dataset.bar = String(bar);
+          cell.dataset.beat = String(beat16);
+          cell.dataset.pitch = String(pitch);
+
+          // 마디/박 경계 표시
+          if (beat16 === 1) cell.classList.add("barline");
+          if ((beat16 - 1) % SUBDIV === 0) cell.classList.add("beatline");
+
+          gridEl.appendChild(cell);
+        }
+      }
+    }
+
+    // =========================
+    // 노트 렌더(블록)
+    // =========================
+    function renderNotes(editingId = null) {
+      notesLayerEl.innerHTML = "";
+
+      const notes = project.tracks[0].notes;
+      for (const n of notes) {
+        const row = pitchToRow.get(n.pitch);
+        if (row === undefined) continue;
+
+        const startCol = posToCol(n.bar, n.beat);
+        const length = Math.max(1, n.length);
+        const endCol = Math.min(totalCols - 1, startCol + length - 1);
+
+        const left = startCol * CELL + 1;
+        const top = row * CELL + 1;
+        const width = (endCol - startCol + 1) * CELL - 2;
+
+        const div = document.createElement("div");
+        div.className = "note";
+        if (editingId && n.id === editingId) div.classList.add("editing");
+
+        div.style.left = `${left}px`;
+        div.style.top = `${top}px`;
+        div.style.width = `${Math.max(6, width)}px`;
+
+        notesLayerEl.appendChild(div);
+      }
+    }
+
+    // =========================
+    // Undo
+    // =========================
+    const history = [];
+    const HISTORY_LIMIT = 50;
+
+    function snapshot() {
+      return JSON.parse(JSON.stringify(project.tracks[0].notes));
+    }
+    function pushHistory() {
+      history.push(snapshot());
+      if (history.length > HISTORY_LIMIT) history.shift();
+    }
+    function undo() {
+      if (history.length === 0) return;
+      project.tracks[0].notes = history.pop();
+      renderNotes();
+    }
+    document.addEventListener("keydown", (e) => {
+      const z = e.key.toLowerCase() === "z";
+      if (z && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        undo();
+      }
+    });
+
+    // =========================
+    // 입력: 클릭 삭제 + 드래그 길이
+    // =========================
+    let dragState = null;
+
+    gridEl.addEventListener("pointerdown", (e) => {
+      
+      const cell = document.elementFromPoint(e.clientX, e.clientY);
+      if (!cell || !cell.classList.contains("cell")) return;
+
+
+      e.preventDefault();
+      gridEl.setPointerCapture(e.pointerId);
+
+      const bar = Number(cell.dataset.bar);
+      const beat16 = Number(cell.dataset.beat);
+      const pitch = Number(cell.dataset.pitch);
+      const col = posToCol(bar, beat16);
+
+      const notes = project.tracks[0].notes;
+
+      // 1) 시작칸 노트 인덱스
+      const idxStart = findNoteIndexAtStart(notes, bar, beat16, pitch);
+
+      // 2) 범위(몸통 포함) 노트 인덱스
+      const idxCover = findNoteIndexCovering(notes, col, pitch);
+
+      pushHistory();
+
+      if (idxStart >= 0) {
+      // ✅ 시작칸이면: 기존대로 리사이즈(드래그 가능), 클릭이면 삭제
+        dragState = {
+          mode: "resize",
+          startCol: posToCol(notes[idxStart].bar, notes[idxStart].beat),
+          noteIndex: idxStart,
+          moved: false
+        };
+        renderNotes(notes[idxStart].id);
+
+      } else if (idxCover >= 0) {
+        // ✅ 노트 "어느 부분이든" 클릭하면: 삭제 후보(드래그로 길이 바뀌는 문제 방지)
+        dragState = {
+          mode: "delete",
+          noteIndex: idxCover
+        };
+        renderNotes(notes[idxCover].id);
+      } else {
+        // ✅ 완전 빈칸이면: 새 노트 생성(기존대로)
+        const n = { id: nextNoteId++, bar, beat6, length: 1, pitch };
+        notes.push(n);
+        dragState = {
+          mode: "create",
+          startCol: col,
+          noteIndex: notes.length - 1,
+          moved: false
+      };
+      renderNotes(n.id);
+}
+
+
+
+
+
+
+
+
+      // 노트 몸통 위라면 아무 것도 하지 않음
+      if (isCellInsideNote(notes, bar, beat16, pitch)) {
+        return;
+      }
+
+      const idx = findNoteIndexAtStart(notes, bar, beat16, pitch);
+
+
+
+      pushHistory();
+
+      if (idx >= 0) {
+        dragState = { mode: "resize", startCol: posToCol(notes[idx].bar, notes[idx].beat), noteIndex: idx, moved: false };
+      } else {
+        const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
+        notes.push(n);
+        dragState = { mode: "create", startCol: col, noteIndex: notes.length - 1, moved: false };
+      }
+
+      renderNotes(notes[dragState.noteIndex]?.id ?? null);
+    });
+
+    function isCellInsideNote(notes, bar, beat16, pitch) {
+      return notes.some(n => {
+      if (n.pitch !== pitch) return false;
+      if (n.bar !== bar) return false;
+
+      const start = n.beat;
+      const end = n.beat + n.length - 1;
+      return beat16 > start && beat16 <= end;
+      });
+    }
+
+
+
+
+
+    gridEl.addEventListener("pointermove", (e) => {
+      if (!dragState) return;
+
+      if (dragState.mode === "delete") return; // ✅ 추가
+
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || !el.classList || !el.classList.contains("cell")) return;
+
+      const bar = Number(el.dataset.bar);
+      const beat16 = Number(el.dataset.beat);
+      const col = posToCol(bar, beat16);
+
+      const notes = project.tracks[0].notes;
+      const n = notes[dragState.noteIndex];
+      if (!n) return;
+
+      const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
+      const newLength = endCol - dragState.startCol + 1;
+
+      if (newLength !== n.length) dragState.moved = true;
+      n.length = Math.max(1, newLength);
+
+      renderNotes(n.id);
+    });
+
+    gridEl.addEventListener("pointerup", () => {
+      if (!dragState) return;
+
+      const notes = project.tracks[0].notes;
+
+      // ✅ 노트 어느 부분 클릭 삭제
+      if (dragState.mode === "delete") {
+        notes.splice(dragState.noteIndex, 1);
+      }
+
+      const n = notes[dragState.noteIndex];
+
+      if (dragState.mode === "resize" && !dragState.moved && n) {
+        notes.splice(dragState.noteIndex, 1);
+      }
+
+      dragState = null;
+      renderNotes();
+    });
+
+    gridEl.addEventListener("pointercancel", () => {
+      dragState = null;
+      renderNotes();
+    });
+
+    // =========================
+    // BPM / Clear
+    // =========================
+    function applyBpm() {
+      const v = Number(bpmEl.value);
+      if (!Number.isFinite(v) || v < 30 || v > 240) return;
+      project.bpm = v;
+      Tone.Transport.bpm.value = project.bpm;
+    }
+    function clearNotes() {
+      pushHistory();
+      project.tracks[0].notes = [];
+      renderNotes();
+    }
+
+    // =========================
+    // 재생/정지
+    // =========================
+    const synth = new Tone.PolySynth(Tone.Synth).toDestination();
+    Tone.Transport.bpm.value = project.bpm;
+
+    function play() {
+      Tone.start();
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
+
+      project.tracks.forEach(track => {
+        track.notes.forEach(note => {
+          Tone.Transport.schedule((time) => {
+            synth.triggerAttackRelease(
+              Tone.Frequency(note.pitch, "midi"),
+              lengthToSeconds(note.length, project.bpm),
+              time
+            );
+          }, positionToSeconds(note.bar, note.beat, project.bpm));
+        });
+      });
+
+      Tone.Transport.start();
+    }
+    function stop() {
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
+    }
+
+    // =========================
+    // MIDI 내보내기
+    // =========================
+    function exportMidi() {
+      const midi = new Midi();
+      midi.header.setTempo(project.bpm);
+
+      project.tracks.forEach(trackData => {
+        const midiTrack = midi.addTrack();
+        midiTrack.name = trackData.name;
+
+        trackData.notes.forEach(note => {
+          midiTrack.addNote({
+            midi: note.pitch,
+            time: positionToSeconds(note.bar, note.beat, project.bpm),
+            duration: lengthToSeconds(note.length, project.bpm),
+            velocity: 0.8
+          });
+        });
+      });
+
+      const blob = new Blob([midi.toArray()], { type: "audio/midi" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "my_web_daw.mid";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // =========================
+    // 초기화
+    // =========================
+    buildTimeline();
+    buildGrid();
+    renderNotes();
+  </script>
+
+// 테스트용이야. 쳇gpt. 1+3은 몇이지
+
+</body>
+</html>
+
+
+
+
