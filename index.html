@@ -141,6 +141,7 @@
 
   <script src="https://unpkg.com/tone/build/Tone.js"></script>
   <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 
   <script>
     // =========================
@@ -187,6 +188,11 @@
     function lengthToSeconds(length16, bpm) {
       return length16 * (60 / bpm) / SUBDIV;
     }
+
+    function pitchToMidi(pitch) {
+      return pitch; // note.pitch가 이미 midi
+    }
+
 
     // =========================
     // 위치 변환
@@ -353,158 +359,194 @@
       }
     });
 
+ 
+
     // =========================
-    // 입력: 클릭 삭제 + 드래그 길이
-    // =========================
-    let dragState = null;
+// 입력: 클릭 삭제 + 드래그 길이
+// =========================
+let dragState = null;
 
-    gridEl.addEventListener("pointerdown", (e) => {
-      const cell = e.target.closest(".cell");
-      if (!cell || !gridEl.contains(cell)) return;
+// beat16(0~15)을 쓰더라도 노트 객체 필드는 beat 하나로 통일한다.
+// note = { id, bar, beat, length, pitch }  // length는 16분음표 단위 길이
 
-      e.preventDefault();
-      gridEl.setPointerCapture(e.pointerId);
+function findNoteIndexAtStart(notes, bar, beat, pitch) {
+  return notes.findIndex(
+    (n) => n.bar === bar && n.pitch === pitch && n.beat === beat
+  );
+}
 
-      const bar = Number(cell.dataset.bar);
-      const beat16 = Number(cell.dataset.beat);
-      const pitch = Number(cell.dataset.pitch);
-      const col = posToCol(bar, beat16);
+function findNoteIndexCovering(notes, bar, beat, pitch) {
+  return notes.findIndex((n) => {
+    if (n.bar !== bar) return false;
+    if (n.pitch !== pitch) return false;
+    return beat >= n.beat && beat < n.beat + n.length; // 몸통 포함
+  });
+}
 
-      const notes = project.tracks[0].notes;
+gridEl.addEventListener("pointerdown", (e) => {
+  const cell = document.elementFromPoint(e.clientX, e.clientY);
+  if (!cell || !cell.classList.contains("cell")) return;
 
-      // 1) 시작칸 노트 인덱스
-      const idxStart = findNoteIndexAtStart(notes, bar, beat16, pitch);
+  e.preventDefault();
+  gridEl.setPointerCapture(e.pointerId);
 
-      // 2) 범위(몸통 포함) 노트 인덱스
-      const idxCover = findNoteIndexCovering(notes, col, pitch);
+  const bar = Number(cell.dataset.bar);
+  const beat = Number(cell.dataset.beat);   // (cell.dataset.beat = beat16)
+  const pitch = Number(cell.dataset.pitch);
+  const col = posToCol(bar, beat);
 
-      pushHistory();
+  const notes = project.tracks[0].notes;
 
-      if (idxStart >= 0) {
-        // 시작칸이면: 리사이즈 모드
-        dragState = {
-          mode: "resize",
-          startCol: posToCol(notes[idxStart].bar, notes[idxStart].beat),
-          noteIndex: idxStart,
-          moved: false
-        };
-        renderNotes(notes[idxStart].id);
+  const idxStart = findNoteIndexAtStart(notes, bar, beat, pitch);
+  const idxCover = findNoteIndexCovering(notes, bar, beat, pitch);
 
-      } else if (idxCover >= 0) {
-        // 노트 몸통 클릭이면: 삭제 후보
-        dragState = {
-          mode: "delete",
-          noteIndex: idxCover
-        };
-        renderNotes(notes[idxCover].id);
+  // 1) 노트 시작칸 클릭: 드래그 길이조절 모드 (드래그 안 하면 삭제)
+  if (idxStart >= 0) {
+    pushHistory(); // 리사이즈 중 length가 계속 바뀌므로 시작 시점에 히스토리 저장
 
-      } else {
-        // 빈 칸이면: 새 노트 생성
-        const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
-        notes.push(n);
-        dragState = {
-          mode: "create",
-          startCol: col,
-          noteIndex: notes.length - 1,
-          moved: false
-        };
-        renderNotes(n.id);
-      }
-    });
+    dragState = {
+      mode: "resize",
+      pointerId: e.pointerId,
+      noteIndex: idxStart,
+      startCol: col,
+      moved: false,
+      created: false,
+    };
 
+    renderNotes(notes[idxStart].id);
+    return;
+  }
 
+  // 2) 노트 몸통(늘어난 부분 포함) 클릭: 삭제 모드
+  if (idxCover >= 0) {
+    pushHistory();
 
+    dragState = {
+      mode: "delete",
+      pointerId: e.pointerId,
+      noteIndex: idxCover,
+    };
 
+    renderNotes(notes[idxCover].id);
+    return;
+  }
 
+  // 3) 빈 칸 클릭: 새 노트 생성 + 리사이즈 모드(드래그로 길이 늘림)
+  pushHistory();
 
+  const n = { id: nextNoteId++, bar, beat, length: 1, pitch };
+  notes.push(n);
 
+  dragState = {
+    mode: "resize",
+    pointerId: e.pointerId,
+    noteIndex: notes.length - 1,
+    startCol: col,
+    moved: false,
+    created: true,
+  };
 
-      // 노트 몸통 위라면 아무 것도 하지 않음
-      if (isCellInsideNote(notes, bar, beat16, pitch)) {
-        return;
-      }
+  renderNotes(n.id);
+});
 
-      const idx = findNoteIndexAtStart(notes, bar, beat16, pitch);
+gridEl.addEventListener("pointermove", (e) => {
+  if (!dragState) return;
+  if (dragState.mode !== "resize") return;
 
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  if (!el || !el.classList || !el.classList.contains("cell")) return;
 
+  const bar = Number(el.dataset.bar);
+  const beat = Number(el.dataset.beat);
+  const col = posToCol(bar, beat);
 
-      pushHistory();
+  const notes = project.tracks[0].notes;
+  const n = notes[dragState.noteIndex];
+  if (!n) return;
 
-      if (idx >= 0) {
-        dragState = { mode: "resize", startCol: posToCol(notes[idx].bar, notes[idx].beat), noteIndex: idx, moved: false };
-      } else {
-        const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
-        notes.push(n);
-        dragState = { mode: "create", startCol: col, noteIndex: notes.length - 1, moved: false };
-      }
+  // 같은 행(같은 pitch)만 늘리고 싶다면 여기서 pitch 체크 추가 가능.
+  // 지금은 마우스가 다른 pitch로 넘어가도 col 기준으로만 길이 계산.
 
-      renderNotes(notes[dragState.noteIndex]?.id ?? null);
-    });
+  const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
+  const newLength = endCol - dragState.startCol + 1;
 
-    function isCellInsideNote(notes, bar, beat16, pitch) {
-      return notes.some(n => {
-      if (n.pitch !== pitch) return false;
-      if (n.bar !== bar) return false;
+  if (newLength !== n.length) dragState.moved = true;
+  n.length = Math.max(1, newLength);
 
-      const start = n.beat;
-      const end = n.beat + n.length - 1;
-      return beat16 > start && beat16 <= end;
-      });
+  renderNotes(n.id);
+});
+
+function finishPointer() {
+  if (!dragState) return;
+
+  const notes = project.tracks[0].notes;
+
+  if (dragState.mode === "delete") {
+    // 몸통 클릭 삭제
+    notes.splice(dragState.noteIndex, 1);
+    renderNotes();
+    dragState = null;
+    return;
+  }
+
+  if (dragState.mode === "resize") {
+    const n = notes[dragState.noteIndex];
+    if (!n) {
+      dragState = null;
+      return;
     }
 
-
-
-
-
-    gridEl.addEventListener("pointermove", (e) => {
-      if (!dragState) return;
-
-      if (dragState.mode === "delete") return; // ✅ 추가
-
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (!el || !el.classList || !el.classList.contains("cell")) return;
-
-      const bar = Number(el.dataset.bar);
-      const beat16 = Number(el.dataset.beat);
-      const col = posToCol(bar, beat16);
-
-      const notes = project.tracks[0].notes;
-      const n = notes[dragState.noteIndex];
-      if (!n) return;
-
-      const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
-      const newLength = endCol - dragState.startCol + 1;
-
-      if (newLength !== n.length) dragState.moved = true;
-      n.length = Math.max(1, newLength);
-
-      renderNotes(n.id);
-    });
-
-    gridEl.addEventListener("pointerup", () => {
-      if (!dragState) return;
-
-      const notes = project.tracks[0].notes;
-
-      // ✅ 노트 어느 부분 클릭 삭제
-      if (dragState.mode === "delete") {
-        notes.splice(dragState.noteIndex, 1);
-      }
-
-      const n = notes[dragState.noteIndex];
-
-      if (dragState.mode === "resize" && !dragState.moved && n) {
-        notes.splice(dragState.noteIndex, 1);
-      }
-
-      dragState = null;
+    // 드래그 없이 클릭만 한 경우:
+    // - 새로 만든 노트(created)는 16분음표(1칸)로 남겨둔다.
+    // - 기존 노트(start 클릭)는 삭제한다.
+  if (!dragState.moved) {
+    if (dragState.created) {
+    // 새로 생성한 1칸짜리 노트 유지
       renderNotes();
-    });
-
-    gridEl.addEventListener("pointercancel", () => {
       dragState = null;
-      renderNotes();
-    });
+      return;
+    }
+    // 기존 노트는 클릭만 하면 삭제
+    notes.splice(dragState.noteIndex, 1);
+    renderNotes();
+    dragState = null;
+    return;
+  }
+
+
+    // 드래그로 길이 변경한 경우: 이미 move에서 length 반영됨
+    renderNotes();
+    dragState = null;
+    return;
+  }
+
+  dragState = null;
+}
+
+gridEl.addEventListener("pointerup", () => {
+  finishPointer();
+});
+
+gridEl.addEventListener("pointercancel", () => {
+  finishPointer();
+});
+
+let pianoInst = null;
+
+async function ensurePiano() {
+  // Tone의 AudioContext를 시작(사용자 클릭 후에만 가능)
+  await Tone.start();
+
+  // Tone이 내부적으로 쓰는 raw WebAudio context를 사용
+  const audioCtx = Tone.getContext().rawContext;
+
+  if (!pianoInst) {
+    pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
+  }
+  return pianoInst;
+}
+
+
 
     // =========================
     // BPM / Clear
@@ -524,28 +566,35 @@
     // =========================
     // 재생/정지
     // =========================
-    const synth = new Tone.PolySynth(Tone.Synth).toDestination();
     Tone.Transport.bpm.value = project.bpm;
 
-    function play() {
-      Tone.start();
-      Tone.Transport.stop();
-      Tone.Transport.cancel();
+async function play() {
+  const inst = await ensurePiano();
 
-      project.tracks.forEach(track => {
-        track.notes.forEach(note => {
-          Tone.Transport.schedule((time) => {
-            synth.triggerAttackRelease(
-              Tone.Frequency(note.pitch, "midi"),
-              lengthToSeconds(note.length, project.bpm),
-              time
-            );
-          }, positionToSeconds(note.bar, note.beat, project.bpm));
-        });
-      });
+  Tone.Transport.stop();
+  Tone.Transport.cancel();
+  Tone.Transport.bpm.value = project.bpm;
 
-      Tone.Transport.start();
-    }
+  project.tracks.forEach(track => {
+    track.notes.forEach(note => {
+      Tone.Transport.schedule((time) => {
+        inst.play(
+          pitchToMidi(note.pitch),
+          time, // Tone과 같은 context time
+          {
+            duration: lengthToSeconds(note.length, project.bpm),
+            gain: 0.7
+          }
+        );
+      }, positionToSeconds(note.bar, note.beat, project.bpm));
+    });
+  });
+
+  Tone.Transport.start();
+}
+
+
+
     function stop() {
       Tone.Transport.stop();
       Tone.Transport.cancel();
@@ -589,10 +638,5 @@
     renderNotes();
   </script>
 
-
 </body>
 </html>
-
-
-
-
