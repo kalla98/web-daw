@@ -359,10 +359,8 @@
     let dragState = null;
 
     gridEl.addEventListener("pointerdown", (e) => {
-      
-      const cell = document.elementFromPoint(e.clientX, e.clientY);
-      if (!cell || !cell.classList.contains("cell")) return;
-
+      const cell = e.target.closest(".cell");
+      if (!cell || !gridEl.contains(cell)) return;
 
       e.preventDefault();
       gridEl.setPointerCapture(e.pointerId);
@@ -383,7 +381,7 @@
       pushHistory();
 
       if (idxStart >= 0) {
-      // ✅ 시작칸이면: 기존대로 리사이즈(드래그 가능), 클릭이면 삭제
+        // 시작칸이면: 리사이즈 모드
         dragState = {
           mode: "resize",
           startCol: posToCol(notes[idxStart].bar, notes[idxStart].beat),
@@ -393,24 +391,26 @@
         renderNotes(notes[idxStart].id);
 
       } else if (idxCover >= 0) {
-        // ✅ 노트 "어느 부분이든" 클릭하면: 삭제 후보(드래그로 길이 바뀌는 문제 방지)
+        // 노트 몸통 클릭이면: 삭제 후보
         dragState = {
           mode: "delete",
           noteIndex: idxCover
         };
         renderNotes(notes[idxCover].id);
+
       } else {
-        // ✅ 완전 빈칸이면: 새 노트 생성(기존대로)
-        const n = { id: nextNoteId++, bar, beat6, length: 1, pitch };
+        // 빈 칸이면: 새 노트 생성
+        const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
         notes.push(n);
         dragState = {
           mode: "create",
           startCol: col,
           noteIndex: notes.length - 1,
           moved: false
-      };
-      renderNotes(n.id);
-}
+        };
+        renderNotes(n.id);
+      }
+    });
 
 
 
@@ -589,7 +589,6 @@
     renderNotes();
   </script>
 
-// 테스트용이야. 쳇gpt. 1+3은 몇이지
 
 </body>
 </html>
