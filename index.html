@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta charset="utf-8" />
   <title>My Web DAW</title>
   <style>
@@ -140,81 +141,31 @@
 
   
 /* =========================
-   Responsive / Mobile tweaks
+   Responsive / Mobile
    ========================= */
-:root{
-  --cellW: 22px;
-  --cellH: 18px;
-  --labelW: 70px;
-}
-
-/* Make main container fluid */
-.topbar, .pianoroll{
+.topbar, .pianoroll {
   max-width: 100%;
   width: 100%;
 }
-
-/* Wrap grid horizontally on small screens, keep labels visible */
 .pianoroll{
-  grid-template-columns: var(--labelW) minmax(0, 1fr);
+  grid-template-columns: 70px minmax(0, 1fr);
 }
 .gridwrap{
   overflow-x: auto;
-  overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   border-radius: 10px;
 }
-.grid{
-  min-width: calc(var(--cellW) * 64); /* 4 bars * 16 cols */
-  touch-action: none; /* prevent browser panning while drawing notes */
-}
-
-/* Use CSS vars for cell sizes */
-.cell{
-  width: var(--cellW);
-  height: var(--cellH);
-}
-.note{
-  height: calc(var(--cellH) - 2px);
-}
-.playhead{
-  width: var(--cellW);
-}
-
-/* Toolbar: easier tapping on mobile */
-.toolbar button, .toolbar select, .toolbar input{
-  min-height: 36px;
-  font-size: 14px;
-}
-.toolbar{
-  gap: 10px;
-}
-
-/* Mobile presets */
+/* 모바일에서 터치로 찍기 쉬우려면 셀을 '더 크게' */
 @media (max-width: 520px){
-  :root{
-    --cellW: 16px;
-    --cellH: 14px;
-    --labelW: 58px;
-  }
-  body{ margin: 10px; }
-  h1{ font-size: 18px; }
-  .legend{ font-size: 12px; }
+  .cell{ width: 26px; height: 22px; }
+  .note{ height: 20px; }
   .toolbar button, .toolbar select, .toolbar input{
-    min-height: 42px;
+    min-height: 44px;
     font-size: 16px;
   }
-  .toolbar input{ width: 90px; }
+  .toolbar{ gap: 10px; }
 }
 
-/* Very small */
-@media (max-width: 380px){
-  :root{
-    --cellW: 14px;
-    --cellH: 12px;
-    --labelW: 54px;
-  }
-}
   </style>
 
 </head>
@@ -229,7 +180,14 @@
 
     <span style="margin-left:10px;">BPM</span>
     <input id="bpm" type="number" min="30" max="240" step="1" value="90" />
-    <button onclick="applyBpm()">적용</button>
+    
+    <span style="margin-left:10px;">Range</span>
+    <select id="rangePreset">
+      <option value="full">Full (C3–B4)</option>
+      <option value="male">Male (E3–A4)</option>
+      <option value="female">Female (G3–C5)</option>
+    </select>
+<button onclick="applyBpm()">적용</button>
 
     <span style="margin-left:12px;">Key</span>
     <select id="keyRoot" onchange="applyKey()">
@@ -316,14 +274,18 @@
     // =========================
     // 피아노롤 설정
     // =========================
-    const PITCH_MIN = 48; // C3
-    const PITCH_MAX = 71; // B4
+    let PITCH_MIN = 48; // C3
+    let PITCH_MAX = 71; // B4
 
     const beatsPerBar = project.timeSignature[0]; // 4
     const totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
 
-    const pitches = [];
-    for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
+    let pitches = [];
+    function rebuildPitches() {
+      pitches.length = 0;
+      for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
+    }
+    rebuildPitches();
 
     const pitchToRow = new Map();
     pitches.forEach((p, i) => pitchToRow.set(p, i));
@@ -389,7 +351,36 @@
       const setActive = (len) => {
         insertLen = len;
         btns.forEach(b => b.classList.toggle("active", Number(b.dataset.len) === len));
-      };
+      }
+
+function applyRangePreset(preset) {
+  if (preset === "male") {
+    // E3(52) ~ A4(69) : 1.5 octave(18 semitones)
+    PITCH_MIN = 52;
+    PITCH_MAX = 69;
+  } else if (preset === "female") {
+    // G3(55) ~ C5(72)
+    PITCH_MIN = 55;
+    PITCH_MAX = 72;
+  } else {
+    // Full: C3(48) ~ B4(71)
+    PITCH_MIN = 48;
+    PITCH_MAX = 71;
+  }
+  rebuildPitches();
+  buildGrid();
+  applyKey();
+  renderNotes();
+}
+
+function initRangePreset() {
+  const sel = document.getElementById("rangePreset");
+  if (!sel) return;
+  sel.addEventListener("change", () => applyRangePreset(sel.value));
+  // default: Full
+  sel.value = "full";
+}
+;
       btns.forEach(b => b.addEventListener("click", () => setActive(Number(b.dataset.len))));
       const active = btns.find(b => b.classList.contains("active"));
       setActive(active ? Number(active.dataset.len) : 1);
