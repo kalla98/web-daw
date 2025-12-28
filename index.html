@@ -166,6 +166,15 @@
   .toolbar{ gap: 10px; }
 }
 
+  
+/* Grid scrolling vs note-drag on touch devices */
+.gridwrap{
+  touch-action: pan-x; /* allow horizontal scroll when NOT dragging notes */
+}
+.gridwrap.dragging{
+  overflow-x: hidden;
+  touch-action: none; /* while resizing/creating notes, prevent scroll hijack */
+}
   </style>
 
 </head>
@@ -277,20 +286,42 @@
     let PITCH_MIN = 48; // C3
     let PITCH_MAX = 71; // B4
 
+
+// Range presets (voice-friendly)
+const RANGE_PRESETS = {
+  full:   { min: 48, max: 71 }, // C3–B4 (2 oct)
+  male:   { min: 52, max: 69 }, // E3–A4 (~1.5 oct)
+  female: { min: 55, max: 72 }, // G3–C5 (~1.5 oct)
+};
+
+function applyRangePreset() {
+  const sel = document.getElementById("rangePreset");
+  const key = sel ? sel.value : "full";
+  const p = RANGE_PRESETS[key] || RANGE_PRESETS.full;
+
+  PITCH_MIN = p.min;
+  PITCH_MAX = p.max;
+
+  rebuildPitches();   // pitches + pitchToRow
+  buildGrid();        // rebuild cells/labels
+  renderNotes();      // redraw notes
+}
+
     const beatsPerBar = project.timeSignature[0]; // 4
     const totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
 
-    let pitches = [];
-    function rebuildPitches() {
-      pitches.length = 0;
-      for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
-    }
-    rebuildPitches();
+    
+let pitches = [];
+const pitchToRow = new Map();
+function rebuildPitches() {
+  pitches.length = 0;
+  for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
 
-    const pitchToRow = new Map();
-    pitches.forEach((p, i) => pitchToRow.set(p, i));
-
-    let nextNoteId = 1;
+  pitchToRow.clear();
+  pitches.forEach((p, i) => pitchToRow.set(p, i));
+}
+rebuildPitches();
+let nextNoteId = 1;
     // =========================
     // Key / Scale (표시 + 코드 연주)
     // =========================
@@ -647,7 +678,9 @@ document.getElementById("timeline").addEventListener("click", (e) => {
       e.preventDefault();
       gridEl.setPointerCapture(e.pointerId);
 
-      const bar = Number(cell.dataset.bar);
+      
+      gridWrapEl.classList.remove("dragging");
+const bar = Number(cell.dataset.bar);
       const beat16 = Number(cell.dataset.beat);
       const pitch = Number(cell.dataset.pitch);
       const col = posToCol(bar, beat16);
@@ -698,7 +731,8 @@ document.getElementById("timeline").addEventListener("click", (e) => {
         created: true
       };
       renderNotes(n.id);
-    });
+    
+        gridWrapEl.classList.add("dragging");});
 
     
 
@@ -706,7 +740,9 @@ document.getElementById("timeline").addEventListener("click", (e) => {
 
 
     gridEl.addEventListener("pointermove", (e) => {
-      if (!dragState) return;
+      
+      if (dragState) e.preventDefault();
+if (!dragState) return;
       if (dragState.mode === "delete") return;
 
       const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -730,6 +766,7 @@ document.getElementById("timeline").addEventListener("click", (e) => {
     });
 
     gridEl.addEventListener("pointerup", () => {
+      gridWrapEl.classList.remove("dragging");
       if (!dragState) return;
 
       const notes = project.tracks[0].notes;
@@ -757,6 +794,7 @@ document.getElementById("timeline").addEventListener("click", (e) => {
     });
 
     gridEl.addEventListener("pointercancel", () => {
+      gridWrapEl.classList.remove("dragging");
       dragState = null;
       renderNotes();
     });
