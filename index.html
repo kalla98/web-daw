@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v21</title>
+  <title>My Web DAW v22</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -179,7 +179,7 @@
 </head>
 
 <body>
-  <h1>My Web DAW v21</h1>
+  <h1>My Web DAW v22</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -777,7 +777,25 @@ const cell = document.elementFromPoint(e.clientX, e.clientY);
             startCol: posToCol(project.tracks[0].notes[activeNoteIndex].bar, project.tracks[0].notes[activeNoteIndex].beat),
             moved: true
           };
-        }
+        
+// === MOVE existing note (after long-press) ===
+if (dragState && dragState.mode === "move") {
+  const cell = document.elementFromPoint(e.clientX, e.clientY);
+  if (cell && cell.classList.contains("cell")) {
+    const bar = Number(cell.dataset.bar);
+    const beat = Number(cell.dataset.beat);
+    const pitch = Number(cell.dataset.pitch);
+    const n = project.tracks[0].notes[dragState.noteIndex];
+    if (n) {
+      n.bar = bar;
+      n.beat = beat;
+      n.pitch = pitch;
+      renderNotes(n.id);
+    }
+  }
+  return;
+}
+}
       }
 if (!dragState) {
         if (activeNoteIndex !== null && elapsed <= TAP_MAX_MS) {
