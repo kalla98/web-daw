@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v22</title>
+  <title>My Web DAW v23</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -174,12 +174,19 @@
   .toolbar button, .toolbar select, .toolbar input{ min-height: 42px; font-size: 16px; }
   .toolbar input{ width: 90px; }
 }
+  
+/* Prevent iOS long-press text selection/callout on the piano roll */
+.pianoroll, .labels, .gridwrap, .grid, .cell, .note, .ruler, .rulerCell {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
   </style>
 
 </head>
 
 <body>
-  <h1>My Web DAW v22</h1>
+  <h1>My Web DAW v23</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -469,6 +476,10 @@ document.getElementById("timeline").addEventListener("click", (e) => {
 });
 
     const gridEl = document.getElementById("grid");
+
+// Prevent iOS/Safari long-press text selection & context menu on the grid
+gridEl.addEventListener("contextmenu", (e) => e.preventDefault());
+gridEl.addEventListener("selectstart", (e) => e.preventDefault());
     const notesLayerEl = document.getElementById("notesLayer");
     const timelineEl = document.getElementById("timeline");
     const bpmEl = document.getElementById("bpm");
@@ -656,8 +667,9 @@ function unlockGridScroll() {
     let dragState = null;
 
 
+
 // =========================
-// Gesture thresholds (mobile-friendly)
+// Gesture edit (tap delete / long-press move / immediate drag resize)
 // =========================
 const TAP_MAX_MS = 250;
 const LONGPRESS_MS = 600;
@@ -667,170 +679,209 @@ let pressTimer = null;
 let pressStartTime = 0;
 let pressStartX = 0;
 let pressStartY = 0;
-let activeNoteIndex = null;
+let pendingNoteIndex = null;
+let pendingDidHistory = false;
 
-function clearPressTimer(){
+function clearPressTimer() {
   if (pressTimer) {
     clearTimeout(pressTimer);
     pressTimer = null;
   }
 }
+    
+gridEl.addEventListener("pointerdown", (e) => {
+  const cell = document.elementFromPoint(e.clientX, e.clientY);
+  if (!cell || !cell.classList.contains("cell")) return;
 
+  e.preventDefault();
+  gridEl.setPointerCapture(e.pointerId);
+  lockGridScroll();
 
-    gridEl.addEventListener("pointerdown", (e) => {
-      pressStartTime = Date.now();
-      pressStartX = e.clientX;
-      pressStartY = e.clientY;
-      activeNoteIndex = null;
-const cell = document.elementFromPoint(e.clientX, e.clientY);
+  pressStartTime = Date.now();
+  pressStartX = e.clientX;
+  pressStartY = e.clientY;
+  pendingNoteIndex = null;
+  pendingDidHistory = false;
+  clearPressTimer();
 
-    // On iOS Safari, prevent scroll while drawing/resizing notes
-    gridEl.addEventListener("touchmove", (e) => {
-      if (dragState) e.preventDefault();
-    }, { passive: false });
-      if (!cell || !cell.classList.contains("cell")) return;
+  const bar = Number(cell.dataset.bar);
+  const beat16 = Number(cell.dataset.beat);
+  const pitch = Number(cell.dataset.pitch);
+  const col = posToCol(bar, beat16);
 
-      e.preventDefault();
-      gridEl.setPointerCapture(e.pointerId);
+  const notes = project.tracks[0].notes;
 
-      lockGridScroll();
-      const bar = Number(cell.dataset.bar);
-      const beat16 = Number(cell.dataset.beat);
-      const pitch = Number(cell.dataset.pitch);
-      const col = posToCol(bar, beat16);
+  // 1) start-cell index (for legacy behavior)
+  const idxStart = findNoteIndexAtStart(notes, bar, beat16, pitch);
+  // 2) any-cover index (note body)
+  const idxCover = findNoteIndexCovering(notes, col, pitch);
 
-      const notes = project.tracks[0].notes;
+  // --- Existing note: gesture edit ---
+  if (idxCover >= 0) {
+    pendingNoteIndex = idxCover;
 
-      // 1) 시작칸 노트 인덱스
-      const idxStart = findNoteIndexAtStart(notes, bar, beat16, pitch);
-
-      // 2) 범위(몸통 포함) 노트 인덱스
-      const idxCover = findNoteIndexCovering(notes, col, pitch);
-
-
-      activeNoteIndex = (idxStart >= 0) ? idxStart : (idxCover >= 0 ? idxCover : null);
-      if (activeNoteIndex !== null) {
-        clearPressTimer();
-        pressTimer = setTimeout(() => {
-          dragState = {
-            mode: "move",
-            noteIndex: activeNoteIndex,
-            startCol: posToCol(notes[activeNoteIndex].bar, notes[activeNoteIndex].beat),
-            startPitch: notes[activeNoteIndex].pitch
-          };
-        }, LONGPRESS_MS);
-      }
-      if (idxStart >= 0) {
-        // ✅ 시작칸이면: 리사이즈(드래그 가능), 클릭만 하면 삭제
-        pushHistory();
-        dragState = {
-          mode: "resize",
-          startCol: posToCol(notes[idxStart].bar, notes[idxStart].beat),
-          noteIndex: idxStart,
-          moved: false,
-          created: false
-        };
-        renderNotes(notes[idxStart].id);
-        return;
-      }
-
-      if (idxCover >= 0) {
-        // ✅ 노트 "어느 부분이든" 클릭하면: 삭제
-        pushHistory();
-        dragState = {
-          mode: "delete",
-          noteIndex: idxCover
-        };
-        renderNotes(notes[idxCover].id);
-        return;
-      }
-
-      // ✅ 완전 빈칸이면: 16분(1칸) 노트 생성 + 드래그로 길이 늘리기
-      pushHistory();
-      const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
-      notes.push(n);
+    // Long-press => move mode
+    pressTimer = setTimeout(() => {
+      if (pendingNoteIndex === null) return;
+      const n = notes[pendingNoteIndex];
+      if (!n) return;
+      if (!pendingDidHistory) { pushHistory(); pendingDidHistory = true; }
 
       dragState = {
-        mode: "resize",
-        startCol: col,
-        noteIndex: notes.length - 1,
-        moved: false,
-        created: true
+        mode: "move",
+        noteIndex: pendingNoteIndex,
       };
       renderNotes(n.id);
-    });
+    }, LONGPRESS_MS);
 
-    
-
-
-
-
-    gridEl.addEventListener("pointermove", (e) => {
-      const dx = Math.abs(e.clientX - pressStartX);
-      const dy = Math.abs(e.clientY - pressStartY);
-      if ((dx > MOVE_THRESHOLD || dy > MOVE_THRESHOLD) && pressTimer) {
-        clearPressTimer();
-        if (activeNoteIndex !== null) {
-          dragState = {
-            mode: "resize",
-            noteIndex: activeNoteIndex,
-            startCol: posToCol(project.tracks[0].notes[activeNoteIndex].bar, project.tracks[0].notes[activeNoteIndex].beat),
-            moved: true
-          };
-        
-// === MOVE existing note (after long-press) ===
-if (dragState && dragState.mode === "move") {
-  const cell = document.elementFromPoint(e.clientX, e.clientY);
-  if (cell && cell.classList.contains("cell")) {
-    const bar = Number(cell.dataset.bar);
-    const beat = Number(cell.dataset.beat);
-    const pitch = Number(cell.dataset.pitch);
-    const n = project.tracks[0].notes[dragState.noteIndex];
-    if (n) {
-      n.bar = bar;
-      n.beat = beat;
-      n.pitch = pitch;
-      renderNotes(n.id);
-    }
+    // Pending state: on quick tap => delete, on early move => resize
+    dragState = {
+      mode: "pending",
+      noteIndex: pendingNoteIndex,
+      startCol: posToCol(notes[pendingNoteIndex].bar, notes[pendingNoteIndex].beat),
+      startLen: notes[pendingNoteIndex].length
+    };
+    renderNotes(notes[pendingNoteIndex].id);
+    return;
   }
-  return;
-}
-}
-      }
-if (!dragState) {
-        if (activeNoteIndex !== null && elapsed <= TAP_MAX_MS) {
-          project.tracks[0].notes.splice(activeNoteIndex, 1);
-          renderNotes();
-        }
-        return;
-      }
-if (dragState.mode === "delete") return;
 
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (!el || !el.classList || !el.classList.contains("cell")) return;
+  // --- Empty cell: create (existing behavior) ---
+  pushHistory();
+  const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
+  notes.push(n);
+  dragState = { mode: "create", startCol: col, noteIndex: notes.length - 1, moved: false };
+  renderNotes(n.id);
+});
 
-      const bar = Number(el.dataset.bar);
-      const beat16 = Number(el.dataset.beat);
-      const col = posToCol(bar, beat16);
+gridEl.addEventListener("pointermove", (e) => {
+  if (!dragState) return;
 
+  // If we are pending on an existing note, decide between resize (early drag) or keep waiting for long-press (move)
+  if (dragState.mode === "pending") {
+    const dx = Math.abs(e.clientX - pressStartX);
+    const dy = Math.abs(e.clientY - pressStartY);
+    if (dx > MOVE_THRESHOLD || dy > MOVE_THRESHOLD) {
+      clearPressTimer();
       const notes = project.tracks[0].notes;
       const n = notes[dragState.noteIndex];
       if (!n) return;
+      if (!pendingDidHistory) { pushHistory(); pendingDidHistory = true; }
 
-      const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
-      const newLength = endCol - dragState.startCol + 1;
+      dragState.mode = "resize_existing";
+      // fallthrough to apply resize below
+    } else {
+      return; // still waiting
+    }
+  }
 
-      if (newLength !== n.length) dragState.moved = true;
-      n.length = Math.max(1, newLength);
+  // Create-drag (existing)
+  if (dragState.mode === "create") {
+    const cell = document.elementFromPoint(e.clientX, e.clientY);
+    if (!cell || !cell.classList.contains("cell")) return;
+    const bar = Number(cell.dataset.bar);
+    const beat16 = Number(cell.dataset.beat);
+    const col = posToCol(bar, beat16);
 
-      renderNotes(n.id);
-    });
+    const notes = project.tracks[0].notes;
+    const n = notes[dragState.noteIndex];
+    if (!n) return;
+    const newLen = Math.max(1, (col - dragState.startCol) + 1);
+    if (newLen !== n.length) dragState.moved = true;
+    n.length = newLen;
+    renderNotes(n.id);
+    return;
+  }
 
-    gridEl.addEventListener("pointerup", () => {
-      const elapsed = Date.now() - pressStartTime;
-      clearPressTimer();
-unlockGridScroll();
-      if (!dragState) return;
+  // Move (after long-press)
+  if (dragState.mode === "move") {
+    const cell = document.elementFromPoint(e.clientX, e.clientY);
+    if (!cell || !cell.classList.contains("cell")) return;
+    const bar = Number(cell.dataset.bar);
+    const beat16 = Number(cell.dataset.beat);
+    const pitch = Number(cell.dataset.pitch);
+
+    const notes = project.tracks[0].notes;
+    const n = notes[dragState.noteIndex];
+    if (!n) return;
+
+    n.bar = bar;
+    n.beat = beat16;
+    n.pitch = pitch;
+    renderNotes(n.id);
+    return;
+  }
+
+  // Resize existing (early drag on a note)
+  if (dragState.mode === "resize_existing") {
+    const cell = document.elementFromPoint(e.clientX, e.clientY);
+    if (!cell || !cell.classList.contains("cell")) return;
+    const bar = Number(cell.dataset.bar);
+    const beat16 = Number(cell.dataset.beat);
+    const col = posToCol(bar, beat16);
+
+    const notes = project.tracks[0].notes;
+    const n = notes[dragState.noteIndex];
+    if (!n) return;
+
+    const newLen = Math.max(1, (col - dragState.startCol) + 1);
+    n.length = newLen;
+    renderNotes(n.id);
+    return;
+  }
+
+  // Legacy resize mode (if any older logic triggers it)
+  if (dragState.mode === "resize") {
+    const cell = document.elementFromPoint(e.clientX, e.clientY);
+    if (!cell || !cell.classList.contains("cell")) return;
+    const bar = Number(cell.dataset.bar);
+    const beat16 = Number(cell.dataset.beat);
+    const col = posToCol(bar, beat16);
+
+    const notes = project.tracks[0].notes;
+    const n = notes[dragState.noteIndex];
+    if (!n) return;
+    const FinalLen = Math.max(1, (col - dragState.startCol) + 1);
+    n.length = FinalLen;
+    renderNotes(n.id);
+  }
+});
+
+gridEl.addEventListener("pointerup", () => {
+  unlockGridScroll();
+  clearPressTimer();
+
+  const elapsed = Date.now() - pressStartTime;
+
+  // Quick tap on existing note => delete
+  if (dragState && dragState.mode === "pending" && pendingNoteIndex !== null && elapsed <= TAP_MAX_MS) {
+    const notes = project.tracks[0].notes;
+    if (!pendingDidHistory) { pushHistory(); pendingDidHistory = true; }
+    notes.splice(pendingNoteIndex, 1);
+    dragState = null;
+    pendingNoteIndex = null;
+    renderNotes();
+    return;
+  }
+
+  // End create / move / resize
+  dragState = null;
+  pendingNoteIndex = null;
+  renderNotes();
+});
+
+gridEl.addEventListener("pointercancel", () => {
+  unlockGridScroll();
+  clearPressTimer();
+  dragState = null;
+  pendingNoteIndex = null;
+  renderNotes();
+});
+
+// On iOS Safari, prevent scroll while drawing/resizing notes
+gridEl.addEventListener("touchmove", (e) => {
+  if (dragState) e.preventDefault();
+}, { passive: false });
+if (!dragState) return;
 
       const notes = project.tracks[0].notes;
 
