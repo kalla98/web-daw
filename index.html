@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v20</title>
+  <title>My Web DAW v21</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -179,7 +179,7 @@
 </head>
 
 <body>
-  <h1>My Web DAW v20</h1>
+  <h1>My Web DAW v21</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -655,8 +655,34 @@ function unlockGridScroll() {
     // =========================
     let dragState = null;
 
+
+// =========================
+// Gesture thresholds (mobile-friendly)
+// =========================
+const TAP_MAX_MS = 250;
+const LONGPRESS_MS = 600;
+const MOVE_THRESHOLD = 10; // px
+
+let pressTimer = null;
+let pressStartTime = 0;
+let pressStartX = 0;
+let pressStartY = 0;
+let activeNoteIndex = null;
+
+function clearPressTimer(){
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+}
+
+
     gridEl.addEventListener("pointerdown", (e) => {
-      const cell = document.elementFromPoint(e.clientX, e.clientY);
+      pressStartTime = Date.now();
+      pressStartX = e.clientX;
+      pressStartY = e.clientY;
+      activeNoteIndex = null;
+const cell = document.elementFromPoint(e.clientX, e.clientY);
 
     // On iOS Safari, prevent scroll while drawing/resizing notes
     gridEl.addEventListener("touchmove", (e) => {
@@ -681,6 +707,19 @@ function unlockGridScroll() {
       // 2) 범위(몸통 포함) 노트 인덱스
       const idxCover = findNoteIndexCovering(notes, col, pitch);
 
+
+      activeNoteIndex = (idxStart >= 0) ? idxStart : (idxCover >= 0 ? idxCover : null);
+      if (activeNoteIndex !== null) {
+        clearPressTimer();
+        pressTimer = setTimeout(() => {
+          dragState = {
+            mode: "move",
+            noteIndex: activeNoteIndex,
+            startCol: posToCol(notes[activeNoteIndex].bar, notes[activeNoteIndex].beat),
+            startPitch: notes[activeNoteIndex].pitch
+          };
+        }, LONGPRESS_MS);
+      }
       if (idxStart >= 0) {
         // ✅ 시작칸이면: 리사이즈(드래그 가능), 클릭만 하면 삭제
         pushHistory();
@@ -727,8 +766,27 @@ function unlockGridScroll() {
 
 
     gridEl.addEventListener("pointermove", (e) => {
-      if (!dragState) return;
-      if (dragState.mode === "delete") return;
+      const dx = Math.abs(e.clientX - pressStartX);
+      const dy = Math.abs(e.clientY - pressStartY);
+      if ((dx > MOVE_THRESHOLD || dy > MOVE_THRESHOLD) && pressTimer) {
+        clearPressTimer();
+        if (activeNoteIndex !== null) {
+          dragState = {
+            mode: "resize",
+            noteIndex: activeNoteIndex,
+            startCol: posToCol(project.tracks[0].notes[activeNoteIndex].bar, project.tracks[0].notes[activeNoteIndex].beat),
+            moved: true
+          };
+        }
+      }
+if (!dragState) {
+        if (activeNoteIndex !== null && elapsed <= TAP_MAX_MS) {
+          project.tracks[0].notes.splice(activeNoteIndex, 1);
+          renderNotes();
+        }
+        return;
+      }
+if (dragState.mode === "delete") return;
 
       const el = document.elementFromPoint(e.clientX, e.clientY);
       if (!el || !el.classList || !el.classList.contains("cell")) return;
@@ -751,7 +809,9 @@ function unlockGridScroll() {
     });
 
     gridEl.addEventListener("pointerup", () => {
-      unlockGridScroll();
+      const elapsed = Date.now() - pressStartTime;
+      clearPressTimer();
+unlockGridScroll();
       if (!dragState) return;
 
       const notes = project.tracks[0].notes;
