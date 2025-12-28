@@ -1,8 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
+  
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta charset="utf-8" />
+<meta charset="utf-8" />
   <title>My Web DAW</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
@@ -141,39 +142,37 @@
 
   
 /* =========================
-   Responsive / Mobile
+   Mobile / Responsive
    ========================= */
-.topbar, .pianoroll {
-  max-width: 100%;
-  width: 100%;
+:root{
+  --cellW: 22px;
+  --cellH: 18px;
+  --labelW: 70px;
+  --playheadW: 2px;
 }
-.pianoroll{
-  grid-template-columns: 70px minmax(0, 1fr);
-}
+.topbar, .pianoroll{ max-width: 100%; width: 100%; }
+.pianoroll{ grid-template-columns: var(--labelW) minmax(0, 1fr); }
 .gridwrap{
   overflow-x: auto;
+  overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x; /* allow horizontal scroll by default */
   border-radius: 10px;
 }
-/* 모바일에서 터치로 찍기 쉬우려면 셀을 '더 크게' */
-@media (max-width: 520px){
-  .cell{ width: 26px; height: 22px; }
-  .note{ height: 20px; }
-  .toolbar button, .toolbar select, .toolbar input{
-    min-height: 44px;
-    font-size: 16px;
-  }
-  .toolbar{ gap: 10px; }
-}
+.grid{ min-width: calc(var(--cellW) * 64); }
+.cell{ width: var(--cellW); height: var(--cellH); }
+.note{ height: calc(var(--cellH) - 2px); }
+.playhead{ width: var(--playheadW) !important; }
 
-  
-/* Grid scrolling vs note-drag on touch devices */
-.gridwrap{
-  touch-action: pan-x; /* allow horizontal scroll when NOT dragging notes */
-}
-.gridwrap.dragging{
-  overflow-x: hidden;
-  touch-action: none; /* while resizing/creating notes, prevent scroll hijack */
+.toolbar button, .toolbar select, .toolbar input{ min-height: 36px; font-size: 14px; }
+
+@media (max-width: 520px){
+  :root{ --cellW: 22px; --cellH: 20px; --labelW: 58px; --playheadW: 2px; }
+  body{ margin: 10px; }
+  h1{ font-size: 18px; }
+  .legend{ font-size: 12px; }
+  .toolbar button, .toolbar select, .toolbar input{ min-height: 42px; font-size: 16px; }
+  .toolbar input{ width: 90px; }
 }
   </style>
 
@@ -189,14 +188,15 @@
 
     <span style="margin-left:10px;">BPM</span>
     <input id="bpm" type="number" min="30" max="240" step="1" value="90" />
-    
+    <button onclick="applyBpm()">적용</button>
     <span style="margin-left:10px;">Range</span>
-    <select id="rangePreset">
+    <select id="rangeSel">
       <option value="full">Full (C3–B4)</option>
-      <option value="male">Male (E3–A4)</option>
+      <option value="male" selected>Male (E3–A4)</option>
       <option value="female">Female (G3–C5)</option>
     </select>
-<button onclick="applyBpm()">적용</button>
+
+
 
     <span style="margin-left:12px;">Key</span>
     <select id="keyRoot" onchange="applyKey()">
@@ -283,45 +283,19 @@
     // =========================
     // 피아노롤 설정
     // =========================
-    let PITCH_MIN = 48; // C3
-    let PITCH_MAX = 71; // B4
-
-
-// Range presets (voice-friendly)
-const RANGE_PRESETS = {
-  full:   { min: 48, max: 71 }, // C3–B4 (2 oct)
-  male:   { min: 52, max: 69 }, // E3–A4 (~1.5 oct)
-  female: { min: 55, max: 72 }, // G3–C5 (~1.5 oct)
-};
-
-function applyRangePreset() {
-  const sel = document.getElementById("rangePreset");
-  const key = sel ? sel.value : "full";
-  const p = RANGE_PRESETS[key] || RANGE_PRESETS.full;
-
-  PITCH_MIN = p.min;
-  PITCH_MAX = p.max;
-
-  rebuildPitches();   // pitches + pitchToRow
-  buildGrid();        // rebuild cells/labels
-  renderNotes();      // redraw notes
-}
+    const PITCH_MIN = 48; // C3
+    const PITCH_MAX = 71; // B4
 
     const beatsPerBar = project.timeSignature[0]; // 4
     const totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
 
-    
-let pitches = [];
-const pitchToRow = new Map();
-function rebuildPitches() {
-  pitches.length = 0;
-  for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
+    let pitches = [];
+    for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
 
-  pitchToRow.clear();
-  pitches.forEach((p, i) => pitchToRow.set(p, i));
-}
-rebuildPitches();
-let nextNoteId = 1;
+    let pitchToRow = new Map();
+    pitches.forEach((p, i) => pitchToRow.set(p, i));
+
+    let nextNoteId = 1;
     // =========================
     // Key / Scale (표시 + 코드 연주)
     // =========================
@@ -382,36 +356,7 @@ let nextNoteId = 1;
       const setActive = (len) => {
         insertLen = len;
         btns.forEach(b => b.classList.toggle("active", Number(b.dataset.len) === len));
-      }
-
-function applyRangePreset(preset) {
-  if (preset === "male") {
-    // E3(52) ~ A4(69) : 1.5 octave(18 semitones)
-    PITCH_MIN = 52;
-    PITCH_MAX = 69;
-  } else if (preset === "female") {
-    // G3(55) ~ C5(72)
-    PITCH_MIN = 55;
-    PITCH_MAX = 72;
-  } else {
-    // Full: C3(48) ~ B4(71)
-    PITCH_MIN = 48;
-    PITCH_MAX = 71;
-  }
-  rebuildPitches();
-  buildGrid();
-  applyKey();
-  renderNotes();
-}
-
-function initRangePreset() {
-  const sel = document.getElementById("rangePreset");
-  if (!sel) return;
-  sel.addEventListener("change", () => applyRangePreset(sel.value));
-  // default: Full
-  sel.value = "full";
-}
-;
+      };
       btns.forEach(b => b.addEventListener("click", () => setActive(Number(b.dataset.len))));
       const active = btns.find(b => b.classList.contains("active"));
       setActive(active ? Number(active.dataset.len) : 1);
@@ -535,6 +480,45 @@ document.getElementById("timeline").addEventListener("click", (e) => {
       return `${name}${oct}`;
     }
 
+
+
+// ===== Range presets (MIDI) =====
+const RANGE_PRESETS = {
+  full:  { min: 48, max: 71 }, // C3..B4 (2 oct)
+  male:  { min: 52, max: 69 }, // E3..A4 (~1.5 oct)
+  female:{ min: 55, max: 72 }  // G3..C5 (~1.5 oct)
+};
+
+function buildPitchData(minMidi, maxMidi){
+  pitches = [];
+  for (let p=maxMidi; p>=minMidi; p--) pitches.push(p);
+  pitchToRow = new Map();
+  pitches.forEach((p,i)=>pitchToRow.set(p,i));
+}
+
+function setRangePreset(key){
+  const preset = RANGE_PRESETS[key] || RANGE_PRESETS.full;
+  buildPitchData(preset.min, preset.max);
+  buildGrid();
+  renderNotes();
+  updatePlayheadVisual(cursorCol);
+}
+
+
+function lockGridScroll() {
+  const wrap = document.querySelector(".gridwrap");
+  if (!wrap) return;
+  wrap.dataset.prevOverflowX = wrap.style.overflowX || "";
+  wrap.dataset.prevTouchAction = wrap.style.touchAction || "";
+  wrap.style.overflowX = "hidden";
+  wrap.style.touchAction = "none";
+}
+function unlockGridScroll() {
+  const wrap = document.querySelector(".gridwrap");
+  if (!wrap) return;
+  wrap.style.overflowX = wrap.dataset.prevOverflowX || "auto";
+  wrap.style.touchAction = wrap.dataset.prevTouchAction || "pan-x";
+}
     function buildTimeline() {
       document.getElementById("timeline").style.gridTemplateColumns = `repeat(${totalCols}, ${CELL}px)`;
       document.getElementById("timeline").innerHTML = "";
@@ -673,14 +657,18 @@ document.getElementById("timeline").addEventListener("click", (e) => {
 
     gridEl.addEventListener("pointerdown", (e) => {
       const cell = document.elementFromPoint(e.clientX, e.clientY);
+
+    // On iOS Safari, prevent scroll while drawing/resizing notes
+    gridEl.addEventListener("touchmove", (e) => {
+      if (dragState) e.preventDefault();
+    }, { passive: false });
       if (!cell || !cell.classList.contains("cell")) return;
 
       e.preventDefault();
       gridEl.setPointerCapture(e.pointerId);
 
-      
-      gridWrapEl.classList.remove("dragging");
-const bar = Number(cell.dataset.bar);
+      lockGridScroll();
+      const bar = Number(cell.dataset.bar);
       const beat16 = Number(cell.dataset.beat);
       const pitch = Number(cell.dataset.pitch);
       const col = posToCol(bar, beat16);
@@ -731,8 +719,7 @@ const bar = Number(cell.dataset.bar);
         created: true
       };
       renderNotes(n.id);
-    
-        gridWrapEl.classList.add("dragging");});
+    });
 
     
 
@@ -740,9 +727,7 @@ const bar = Number(cell.dataset.bar);
 
 
     gridEl.addEventListener("pointermove", (e) => {
-      
-      if (dragState) e.preventDefault();
-if (!dragState) return;
+      if (!dragState) return;
       if (dragState.mode === "delete") return;
 
       const el = document.elementFromPoint(e.clientX, e.clientY);
@@ -766,7 +751,7 @@ if (!dragState) return;
     });
 
     gridEl.addEventListener("pointerup", () => {
-      gridWrapEl.classList.remove("dragging");
+      unlockGridScroll();
       if (!dragState) return;
 
       const notes = project.tracks[0].notes;
@@ -794,7 +779,6 @@ if (!dragState) return;
     });
 
     gridEl.addEventListener("pointercancel", () => {
-      gridWrapEl.classList.remove("dragging");
       dragState = null;
       renderNotes();
     });
@@ -1177,6 +1161,13 @@ document.addEventListener("keydown", (e) => {
     renderNotes();
     applyKey();
   
+
+// Range UI
+const rangeSel = document.getElementById("rangeSel");
+if (rangeSel) {
+  rangeSel.addEventListener("change", () => setRangePreset(rangeSel.value));
+  setRangePreset(rangeSel.value); // initial
+}
     initInsertLenButtons();setCursorCol(0);
     updatePlayheadVisual(0);
     
