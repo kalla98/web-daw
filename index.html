@@ -190,7 +190,7 @@
 </head>
 
 <body>
-  <h1>My Web DAW v26</h1>
+  <h1>My Web DAW v27</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -268,7 +268,9 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/tone/build/Tone.js"></script>
+  <script src="https://unpkg.com/tone/build/Tone.js">
+    let stopArmed = false; // Stop twice to reset to start
+</script>
   <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
@@ -439,6 +441,15 @@ function updatePlayheadVisual(col) {
   playheadEl.classList.remove("hidden");
 }
 
+
+
+function resetToStart() {
+  cursorCol = 0;
+  updatePlayheadVisual(cursorCol);
+  const wrap = document.querySelector(".gridwrap");
+  if (wrap) wrap.scrollLeft = 0;
+  renderNotes();
+}
 function setCursorCol(col) {
   cursorCol = Math.max(0, Math.min(totalCols - 1, col));
   if (Tone.Transport.state !== "started") updatePlayheadVisual(cursorCol);
@@ -918,6 +929,7 @@ gridEl.addEventListener("touchmove", (e) => {
     }
 
     async function play() {
+      stopArmed = false;
   const inst = await ensurePiano();
 
   // 사용자 제스처 이후 오디오 시작(필수)
@@ -1213,7 +1225,22 @@ document.addEventListener("keydown", (e) => {
         playChord(Number(e.key));
       }
     });
-    function stop() {
+    
+function stop() {
+  // 1st press while playing: stop and arm reset
+  if (isPlaying) {
+    stopInternal();
+    stopArmed = true;
+    return;
+  }
+  // 2nd press after stop: reset to start
+  if (stopArmed) {
+    resetToStart();
+    stopArmed = false;
+  }
+}
+
+function stopInternal() {
   if (Tone.Transport.state === "started") {
     const bpm = Tone.Transport.bpm.value;
     const secPer16 = (60 / bpm) / 4;
