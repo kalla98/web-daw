@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v23</title>
+  <title>My Web DAW v24</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -186,7 +186,7 @@
 </head>
 
 <body>
-  <h1>My Web DAW v23</h1>
+  <h1>My Web DAW v24</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -881,40 +881,6 @@ gridEl.addEventListener("pointercancel", () => {
 gridEl.addEventListener("touchmove", (e) => {
   if (dragState) e.preventDefault();
 }, { passive: false });
-if (!dragState) return;
-
-      const notes = project.tracks[0].notes;
-
-      if (dragState.mode === "delete") {
-        notes.splice(dragState.noteIndex, 1);
-        dragState = null;
-        renderNotes();
-        return;
-      }
-
-      const n = notes[dragState.noteIndex];
-
-      // resize 모드: 드래그 없이 클릭만 한 경우
-      if (dragState.mode === "resize" && !dragState.moved && n) {
-        // 새로 생성한 노트(created)는 1칸 유지
-        // 기존 노트는 클릭만 하면 삭제
-        if (!dragState.created) {
-          notes.splice(dragState.noteIndex, 1);
-        }
-      }
-
-      dragState = null;
-      renderNotes();
-    });
-
-    gridEl.addEventListener("pointercancel", () => {
-      dragState = null;
-      renderNotes();
-    });
-
-    // =========================
-    // BPM / Clear
-    // =========================
     function applyBpm() {
       const v = Number(bpmEl.value);
       if (!Number.isFinite(v) || v < 30 || v > 240) return;
