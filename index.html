@@ -103,7 +103,120 @@
     }
 
     button:focus { outline: none; }
+  
+    .cell.outKey { background: #f2f2f2; }
+    .label.outKey { color: #999; background: #fafafa; }
+
+  /* 플레이헤드(포지션 바) */
+  .playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(220, 0, 0, 0.85);
+    pointer-events: none;
+    transform: translateX(-1px);
+  }
+  .playhead.hidden { display: none; }
+
+    /* Insert length buttons */
+    .seg {
+      display: inline-flex;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      overflow: hidden;
+      vertical-align: middle;
+    }
+    .seg button {
+      border: 0;
+      padding: 6px 10px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .seg button + button { border-left: 1px solid #ddd; }
+    .seg button.active { background: #111; color: #fff; }
+
+  
+/* =========================
+   Responsive / Mobile tweaks
+   ========================= */
+:root{
+  --cellW: 22px;
+  --cellH: 18px;
+  --labelW: 70px;
+}
+
+/* Make main container fluid */
+.topbar, .pianoroll{
+  max-width: 100%;
+  width: 100%;
+}
+
+/* Wrap grid horizontally on small screens, keep labels visible */
+.pianoroll{
+  grid-template-columns: var(--labelW) minmax(0, 1fr);
+}
+.gridwrap{
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 10px;
+}
+.grid{
+  min-width: calc(var(--cellW) * 64); /* 4 bars * 16 cols */
+  touch-action: none; /* prevent browser panning while drawing notes */
+}
+
+/* Use CSS vars for cell sizes */
+.cell{
+  width: var(--cellW);
+  height: var(--cellH);
+}
+.note{
+  height: calc(var(--cellH) - 2px);
+}
+.playhead{
+  width: var(--cellW);
+}
+
+/* Toolbar: easier tapping on mobile */
+.toolbar button, .toolbar select, .toolbar input{
+  min-height: 36px;
+  font-size: 14px;
+}
+.toolbar{
+  gap: 10px;
+}
+
+/* Mobile presets */
+@media (max-width: 520px){
+  :root{
+    --cellW: 16px;
+    --cellH: 14px;
+    --labelW: 58px;
+  }
+  body{ margin: 10px; }
+  h1{ font-size: 18px; }
+  .legend{ font-size: 12px; }
+  .toolbar button, .toolbar select, .toolbar input{
+    min-height: 42px;
+    font-size: 16px;
+  }
+  .toolbar input{ width: 90px; }
+}
+
+/* Very small */
+@media (max-width: 380px){
+  :root{
+    --cellW: 14px;
+    --cellH: 12px;
+    --labelW: 54px;
+  }
+}
   </style>
+
 </head>
 
 <body>
@@ -117,6 +230,43 @@
     <span style="margin-left:10px;">BPM</span>
     <input id="bpm" type="number" min="30" max="240" step="1" value="90" />
     <button onclick="applyBpm()">적용</button>
+
+    <span style="margin-left:12px;">Key</span>
+    <select id="keyRoot" onchange="applyKey()">
+      <option value="0" selected>C</option>
+      <option value="1">C#</option>
+      <option value="2">D</option>
+      <option value="3">D#</option>
+      <option value="4">E</option>
+      <option value="5">F</option>
+      <option value="6">F#</option>
+      <option value="7">G</option>
+      <option value="8">G#</option>
+      <option value="9">A</option>
+      <option value="10">A#</option>
+      <option value="11">B</option>
+    </select>
+    <select id="scaleType" onchange="applyKey()">
+      <option value="major" selected>Major</option>
+      <option value="minor">Natural Minor</option>
+    </select>
+
+    <span style="margin-left:10px;">Insert Len</span>
+    <span class="seg" id="insertLenSeg">
+      <button type="button" data-len="4">1/4</button>
+      <button type="button" data-len="2">1/8</button>
+      <button type="button" data-len="1" class="active">1/16</button>
+    </span>
+
+    <span style="margin-left:12px;">Chords</span>
+    <button onclick="playChord(1)">I</button>
+    <button onclick="playChord(2)">ii</button>
+    <button onclick="playChord(3)">iii</button>
+    <button onclick="playChord(4)">IV</button>
+    <button onclick="playChord(5)">V</button>
+    <button onclick="playChord(6)">vi</button>
+    <button onclick="playChord(7)">vii°</button>
+
 
     <button onclick="clearNotes()" style="margin-left:auto;">노트 전체 삭제</button>
   </div>
@@ -134,16 +284,19 @@
     <div id="labels" class="labels"></div>
 
     <div class="gridWrap" id="gridWrap">
-      <div id="grid" class="grid"></div>
+      <div class="gridwrap"><div id="grid" class="grid"></div></div>
       <div id="notesLayer" class="notesLayer"></div>
+      <div id="playhead" class="playhead hidden"></div>
     </div>
   </div>
 
   <script src="https://unpkg.com/tone/build/Tone.js"></script>
   <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
+
   <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
 
   <script>
+
     // =========================
     // 설정
     // =========================
@@ -176,8 +329,72 @@
     pitches.forEach((p, i) => pitchToRow.set(p, i));
 
     let nextNoteId = 1;
-
     // =========================
+    // Key / Scale (표시 + 코드 연주)
+    // =========================
+    let currentKeyRoot = 0; // 0=C
+    let currentScaleType = "major";
+
+    // 코드 찍기/입력 길이(16분음표 단위): 4=1/4, 2=1/8, 1=1/16
+    let insertLen = 1;
+
+    const SCALE_MAJOR = [0, 2, 4, 5, 7, 9, 11];
+    const SCALE_MINOR = [0, 2, 3, 5, 7, 8, 10]; // natural minor
+
+    function getScaleSemis() {
+      return (currentScaleType === "minor") ? SCALE_MINOR : SCALE_MAJOR;
+    }
+
+    function getScalePitchClassSet() {
+      const base = getScaleSemis();
+      return new Set(base.map(x => (x + currentKeyRoot) % 12));
+    }
+
+    function isInCurrentKey(midi) {
+      return getScalePitchClassSet().has(((midi % 12) + 12) % 12);
+    }
+
+    function updateKeyHighlights() {
+      // 라벨: pitches 순서와 labelsEl 자식 순서가 같음
+      const labelEls = labelsEl.querySelectorAll(".label");
+      for (let i = 0; i < labelEls.length; i++) {
+        const pitch = pitches[i];
+        labelEls[i].classList.toggle("outKey", !isInCurrentKey(pitch));
+      }
+
+      // 셀
+      const cells = gridEl.querySelectorAll(".cell");
+      cells.forEach(c => {
+        const pitch = Number(c.dataset.pitch);
+        c.classList.toggle("outKey", !isInCurrentKey(pitch));
+      });
+    }
+
+    function applyKey() {
+      const rootEl = document.getElementById("keyRoot");
+      const scaleEl = document.getElementById("scaleType");
+      if (rootEl) currentKeyRoot = Number(rootEl.value);
+      if (scaleEl) currentScaleType = scaleEl.value;
+      updateKeyHighlights();
+    }
+
+
+
+    
+
+    function initInsertLenButtons() {
+      const seg = document.getElementById("insertLenSeg");
+      if (!seg) return;
+      const btns = Array.from(seg.querySelectorAll("button[data-len]"));
+      const setActive = (len) => {
+        insertLen = len;
+        btns.forEach(b => b.classList.toggle("active", Number(b.dataset.len) === len));
+      };
+      btns.forEach(b => b.addEventListener("click", () => setActive(Number(b.dataset.len))));
+      const active = btns.find(b => b.classList.contains("active"));
+      setActive(active ? Number(active.dataset.len) : 1);
+    }
+// =========================
     // 시간 변환 (마디/16분 -> 초)
     // =========================
     function positionToSeconds(bar, beat16, bpm) {
@@ -188,11 +405,6 @@
     function lengthToSeconds(length16, bpm) {
       return length16 * (60 / bpm) / SUBDIV;
     }
-
-    function pitchToMidi(pitch) {
-      return pitch; // note.pitch가 이미 midi
-    }
-
 
     // =========================
     // 위치 변환
@@ -220,6 +432,75 @@
     // =========================
     const labelsEl = document.getElementById("labels");
     const gridWrapEl = document.getElementById("gridWrap");
+
+// =========================
+// 플레이헤드(포지션 바) / 커서
+// =========================
+const playheadEl = document.getElementById("playhead");
+let cursorCol = 0; // 0..totalCols-1 (16분음표 칸)
+let rafId = null;
+
+function colToTransportPos(col) {
+  const measures = Math.floor(col / 16);
+  const beat16 = col % 16;
+  const quarters = Math.floor(beat16 / 4);
+  const six = beat16 % 4;
+  return `${measures}:${quarters}:${six}`;
+}
+
+function noteToTransportPos(note) {
+  const measures = note.bar - 1;
+  const quarters = Math.floor((note.beat - 1) / 4);
+  const six = (note.beat - 1) % 4;
+  return `${measures}:${quarters}:${six}`;
+}
+
+function updatePlayheadVisual(col) {
+  if (!playheadEl) return;
+  playheadEl.style.left = `${col * CELL}px`;
+  playheadEl.classList.remove("hidden");
+}
+
+function setCursorCol(col) {
+  cursorCol = Math.max(0, Math.min(totalCols - 1, col));
+  if (Tone.Transport.state !== "started") updatePlayheadVisual(cursorCol);
+}
+
+function startPlayheadLoop() {
+  if (rafId) cancelAnimationFrame(rafId);
+  playheadEl.classList.remove("hidden");
+
+  const tick = () => {
+      if (Tone.Transport.state === "started") {
+        // Transport.position = "measures:quarters:sixteenths" (0-based measures)
+        const pos = Tone.Transport.position.toString();
+        const parts = pos.split(":").map(x => Number(x));
+        const m = (Number.isFinite(parts[0]) ? parts[0] : 0);
+        const q = (Number.isFinite(parts[1]) ? parts[1] : 0);
+        const s = (Number.isFinite(parts[2]) ? parts[2] : 0);
+        const col = Math.max(0, Math.min(totalCols - 1, m * 16 + q * 4 + s));
+        updatePlayheadVisual(col);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+  rafId = requestAnimationFrame(tick);
+}
+
+function stopPlayheadLoop() {
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  updatePlayheadVisual(cursorCol);
+}
+
+// 타임라인 클릭으로 커서 위치 지정
+document.getElementById("timeline").addEventListener("click", (e) => {
+  const t = e.target;
+  if (!t || !t.classList || !t.classList.contains("tick")) return;
+  const col = Number(t.dataset.col);
+  if (!Number.isFinite(col)) return;
+  setCursorCol(col);
+});
+
     const gridEl = document.getElementById("grid");
     const notesLayerEl = document.getElementById("notesLayer");
     const timelineEl = document.getElementById("timeline");
@@ -233,8 +514,8 @@
     }
 
     function buildTimeline() {
-      timelineEl.style.gridTemplateColumns = `repeat(${totalCols}, ${CELL}px)`;
-      timelineEl.innerHTML = "";
+      document.getElementById("timeline").style.gridTemplateColumns = `repeat(${totalCols}, ${CELL}px)`;
+      document.getElementById("timeline").innerHTML = "";
 
       for (let col = 0; col < totalCols; col++) {
         const bar = Math.floor(col / (beatsPerBar * SUBDIV)) + 1;
@@ -242,6 +523,7 @@
 
         const tick = document.createElement("div");
         tick.className = "tick";
+        tick.dataset.col = col;
 
         // 1) 마디 첫 칸에는 마디 번호
         // 2) 그 외에는 박(1~4)만 표시 (16분은 너무 복잡하니까)
@@ -254,7 +536,7 @@
           tick.textContent = "";
         }
 
-        timelineEl.appendChild(tick);
+        document.getElementById("timeline").appendChild(tick);
       }
     }
 
@@ -265,6 +547,7 @@
       pitches.forEach(p => {
         const div = document.createElement("div");
         div.className = "label";
+        if (!isInCurrentKey(p)) div.classList.add("outKey");
         div.textContent = midiToName(p);
         labelsEl.appendChild(div);
       });
@@ -288,6 +571,8 @@
           const bar = Math.floor(col / (beatsPerBar * SUBDIV)) + 1;
           const beat16 = (col % (beatsPerBar * SUBDIV)) + 1;
           const pitch = pitches[row];
+
+          if (!isInCurrentKey(pitch)) cell.classList.add("outKey");
 
           cell.dataset.bar = String(bar);
           cell.dataset.beat = String(beat16);
@@ -359,194 +644,131 @@
       }
     });
 
- 
-
     // =========================
-// 입력: 클릭 삭제 + 드래그 길이
-// =========================
-let dragState = null;
+    // 입력: 클릭 삭제 + 드래그 길이
+    // =========================
+    let dragState = null;
 
-// beat16(0~15)을 쓰더라도 노트 객체 필드는 beat 하나로 통일한다.
-// note = { id, bar, beat, length, pitch }  // length는 16분음표 단위 길이
+    gridEl.addEventListener("pointerdown", (e) => {
+      const cell = document.elementFromPoint(e.clientX, e.clientY);
+      if (!cell || !cell.classList.contains("cell")) return;
 
-function findNoteIndexAtStart(notes, bar, beat, pitch) {
-  return notes.findIndex(
-    (n) => n.bar === bar && n.pitch === pitch && n.beat === beat
-  );
-}
+      e.preventDefault();
+      gridEl.setPointerCapture(e.pointerId);
 
-function findNoteIndexCovering(notes, bar, beat, pitch) {
-  return notes.findIndex((n) => {
-    if (n.bar !== bar) return false;
-    if (n.pitch !== pitch) return false;
-    return beat >= n.beat && beat < n.beat + n.length; // 몸통 포함
-  });
-}
+      const bar = Number(cell.dataset.bar);
+      const beat16 = Number(cell.dataset.beat);
+      const pitch = Number(cell.dataset.pitch);
+      const col = posToCol(bar, beat16);
 
-gridEl.addEventListener("pointerdown", (e) => {
-  const cell = document.elementFromPoint(e.clientX, e.clientY);
-  if (!cell || !cell.classList.contains("cell")) return;
+      const notes = project.tracks[0].notes;
 
-  e.preventDefault();
-  gridEl.setPointerCapture(e.pointerId);
+      // 1) 시작칸 노트 인덱스
+      const idxStart = findNoteIndexAtStart(notes, bar, beat16, pitch);
 
-  const bar = Number(cell.dataset.bar);
-  const beat = Number(cell.dataset.beat);   // (cell.dataset.beat = beat16)
-  const pitch = Number(cell.dataset.pitch);
-  const col = posToCol(bar, beat);
+      // 2) 범위(몸통 포함) 노트 인덱스
+      const idxCover = findNoteIndexCovering(notes, col, pitch);
 
-  const notes = project.tracks[0].notes;
+      if (idxStart >= 0) {
+        // ✅ 시작칸이면: 리사이즈(드래그 가능), 클릭만 하면 삭제
+        pushHistory();
+        dragState = {
+          mode: "resize",
+          startCol: posToCol(notes[idxStart].bar, notes[idxStart].beat),
+          noteIndex: idxStart,
+          moved: false,
+          created: false
+        };
+        renderNotes(notes[idxStart].id);
+        return;
+      }
 
-  const idxStart = findNoteIndexAtStart(notes, bar, beat, pitch);
-  const idxCover = findNoteIndexCovering(notes, bar, beat, pitch);
+      if (idxCover >= 0) {
+        // ✅ 노트 "어느 부분이든" 클릭하면: 삭제
+        pushHistory();
+        dragState = {
+          mode: "delete",
+          noteIndex: idxCover
+        };
+        renderNotes(notes[idxCover].id);
+        return;
+      }
 
-  // 1) 노트 시작칸 클릭: 드래그 길이조절 모드 (드래그 안 하면 삭제)
-  if (idxStart >= 0) {
-    pushHistory(); // 리사이즈 중 length가 계속 바뀌므로 시작 시점에 히스토리 저장
+      // ✅ 완전 빈칸이면: 16분(1칸) 노트 생성 + 드래그로 길이 늘리기
+      pushHistory();
+      const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
+      notes.push(n);
 
-    dragState = {
-      mode: "resize",
-      pointerId: e.pointerId,
-      noteIndex: idxStart,
-      startCol: col,
-      moved: false,
-      created: false,
-    };
+      dragState = {
+        mode: "resize",
+        startCol: col,
+        noteIndex: notes.length - 1,
+        moved: false,
+        created: true
+      };
+      renderNotes(n.id);
+    });
 
-    renderNotes(notes[idxStart].id);
-    return;
-  }
+    
 
-  // 2) 노트 몸통(늘어난 부분 포함) 클릭: 삭제 모드
-  if (idxCover >= 0) {
-    pushHistory();
 
-    dragState = {
-      mode: "delete",
-      pointerId: e.pointerId,
-      noteIndex: idxCover,
-    };
 
-    renderNotes(notes[idxCover].id);
-    return;
-  }
 
-  // 3) 빈 칸 클릭: 새 노트 생성 + 리사이즈 모드(드래그로 길이 늘림)
-  pushHistory();
+    gridEl.addEventListener("pointermove", (e) => {
+      if (!dragState) return;
+      if (dragState.mode === "delete") return;
 
-  const n = { id: nextNoteId++, bar, beat, length: 1, pitch };
-  notes.push(n);
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      if (!el || !el.classList || !el.classList.contains("cell")) return;
 
-  dragState = {
-    mode: "resize",
-    pointerId: e.pointerId,
-    noteIndex: notes.length - 1,
-    startCol: col,
-    moved: false,
-    created: true,
-  };
+      const bar = Number(el.dataset.bar);
+      const beat16 = Number(el.dataset.beat);
+      const col = posToCol(bar, beat16);
 
-  renderNotes(n.id);
-});
+      const notes = project.tracks[0].notes;
+      const n = notes[dragState.noteIndex];
+      if (!n) return;
 
-gridEl.addEventListener("pointermove", (e) => {
-  if (!dragState) return;
-  if (dragState.mode !== "resize") return;
+      const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
+      const newLength = endCol - dragState.startCol + 1;
 
-  const el = document.elementFromPoint(e.clientX, e.clientY);
-  if (!el || !el.classList || !el.classList.contains("cell")) return;
+      if (newLength !== n.length) dragState.moved = true;
+      n.length = Math.max(1, newLength);
 
-  const bar = Number(el.dataset.bar);
-  const beat = Number(el.dataset.beat);
-  const col = posToCol(bar, beat);
+      renderNotes(n.id);
+    });
 
-  const notes = project.tracks[0].notes;
-  const n = notes[dragState.noteIndex];
-  if (!n) return;
+    gridEl.addEventListener("pointerup", () => {
+      if (!dragState) return;
 
-  // 같은 행(같은 pitch)만 늘리고 싶다면 여기서 pitch 체크 추가 가능.
-  // 지금은 마우스가 다른 pitch로 넘어가도 col 기준으로만 길이 계산.
+      const notes = project.tracks[0].notes;
 
-  const endCol = Math.max(dragState.startCol, Math.min(totalCols - 1, col));
-  const newLength = endCol - dragState.startCol + 1;
+      if (dragState.mode === "delete") {
+        notes.splice(dragState.noteIndex, 1);
+        dragState = null;
+        renderNotes();
+        return;
+      }
 
-  if (newLength !== n.length) dragState.moved = true;
-  n.length = Math.max(1, newLength);
+      const n = notes[dragState.noteIndex];
 
-  renderNotes(n.id);
-});
+      // resize 모드: 드래그 없이 클릭만 한 경우
+      if (dragState.mode === "resize" && !dragState.moved && n) {
+        // 새로 생성한 노트(created)는 1칸 유지
+        // 기존 노트는 클릭만 하면 삭제
+        if (!dragState.created) {
+          notes.splice(dragState.noteIndex, 1);
+        }
+      }
 
-function finishPointer() {
-  if (!dragState) return;
-
-  const notes = project.tracks[0].notes;
-
-  if (dragState.mode === "delete") {
-    // 몸통 클릭 삭제
-    notes.splice(dragState.noteIndex, 1);
-    renderNotes();
-    dragState = null;
-    return;
-  }
-
-  if (dragState.mode === "resize") {
-    const n = notes[dragState.noteIndex];
-    if (!n) {
       dragState = null;
-      return;
-    }
-
-    // 드래그 없이 클릭만 한 경우:
-    // - 새로 만든 노트(created)는 16분음표(1칸)로 남겨둔다.
-    // - 기존 노트(start 클릭)는 삭제한다.
-  if (!dragState.moved) {
-    if (dragState.created) {
-    // 새로 생성한 1칸짜리 노트 유지
       renderNotes();
+    });
+
+    gridEl.addEventListener("pointercancel", () => {
       dragState = null;
-      return;
-    }
-    // 기존 노트는 클릭만 하면 삭제
-    notes.splice(dragState.noteIndex, 1);
-    renderNotes();
-    dragState = null;
-    return;
-  }
-
-
-    // 드래그로 길이 변경한 경우: 이미 move에서 length 반영됨
-    renderNotes();
-    dragState = null;
-    return;
-  }
-
-  dragState = null;
-}
-
-gridEl.addEventListener("pointerup", () => {
-  finishPointer();
-});
-
-gridEl.addEventListener("pointercancel", () => {
-  finishPointer();
-});
-
-let pianoInst = null;
-
-async function ensurePiano() {
-  // Tone의 AudioContext를 시작(사용자 클릭 후에만 가능)
-  await Tone.start();
-
-  // Tone이 내부적으로 쓰는 raw WebAudio context를 사용
-  const audioCtx = Tone.getContext().rawContext;
-
-  if (!pianoInst) {
-    pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
-  }
-  return pianoInst;
-}
-
-
+      renderNotes();
+    });
 
     // =========================
     // BPM / Clear
@@ -566,39 +788,327 @@ async function ensurePiano() {
     // =========================
     // 재생/정지
     // =========================
+    let pianoInst = null;
     Tone.Transport.bpm.value = project.bpm;
 
-async function play() {
+    function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
+
+    async function ensurePiano() {
+      await Tone.start();
+      const audioCtx = Tone.getContext().rawContext;
+      if (!pianoInst) {
+        pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
+      }
+      return pianoInst;
+    }
+
+    async function play() {
   const inst = await ensurePiano();
+
+  // 사용자 제스처 이후 오디오 시작(필수)
+  await Tone.start();
 
   Tone.Transport.stop();
   Tone.Transport.cancel();
   Tone.Transport.bpm.value = project.bpm;
+
+  // 커서 위치에서 시작
+  Tone.Transport.position = colToTransportPos(cursorCol);
 
   project.tracks.forEach(track => {
     track.notes.forEach(note => {
       Tone.Transport.schedule((time) => {
         inst.play(
           pitchToMidi(note.pitch),
-          time, // Tone과 같은 context time
-          {
-            duration: lengthToSeconds(note.length, project.bpm),
-            gain: 0.7
-          }
+          time,
+          { duration: lengthToSeconds(note.length, project.bpm), gain: 0.9 }
         );
-      }, positionToSeconds(note.bar, note.beat, project.bpm));
+      }, noteToTransportPos(note));
     });
   });
 
   Tone.Transport.start();
+  startPlayheadLoop();
 }
 
 
+    // =========================
+    // 다이아토닉 코드 (1~7) 연주
+    // =========================
+    
+function getGridCenterMidi() {
+  // pitches 배열이 높은->낮은 순일 수 있으니 중앙값 사용
+  const sorted = [...pitches].sort((a,b)=>a-b);
+  const mid = sorted[Math.floor(sorted.length / 2)];
+  return mid;
+}
 
-    function stop() {
-      Tone.Transport.stop();
-      Tone.Transport.cancel();
+function shiftChordIntoRange(chord, minP, maxP, target) {
+  // chord 전체를 옥타브 단위로 이동시켜 평균이 target 근처가 되도록
+  const avg = (arr) => arr.reduce((a,b)=>a+b,0)/arr.length;
+  let c = [...chord];
+
+  // 1) 평균을 target에 가깝게
+  for (let i=0; i<8; i++) {
+    const a = avg(c);
+    if (a > target + 3) c = c.map(n => n - 12);
+    else if (a < target - 3) c = c.map(n => n + 12);
+    else break;
+  }
+
+  // 2) 범위 밖이면 다시 보정
+  for (let i=0; i<8; i++) {
+    const lo = Math.min(...c);
+    const hi = Math.max(...c);
+    if (lo < minP) c = c.map(n => n + 12);
+    else if (hi > maxP) c = c.map(n => n - 12);
+    else break;
+  }
+
+  // 마지막: 개별 음이 살짝 밖이면 nearest octave로 클램프
+  c = c.map(n => {
+    while (n < minP) n += 12;
+    while (n > maxP) n -= 12;
+    return n;
+  });
+
+  return c;
+}
+function rootMidiNear(center = 60) {
+      // center 근처에서 현재 키 루트 pitch class에 맞는 MIDI를 찾는다.
+      const pc = currentKeyRoot;
+      let m = center;
+      while (((m % 12) + 12) % 12 !== pc) m--;
+      if (center - m > 6) m += 12;
+      return m;
     }
+
+    // degree: 1~7
+    
+    function getChordCenterMidi() {
+      // 그리드의 중간 음역을 기준으로 코드 보이싱을 잡는다
+      if (!Array.isArray(pitches) || pitches.length === 0) return 60;
+      return pitches[Math.floor(pitches.length / 2)];
+    }
+
+    function transposeIntoRange(midi, minP, maxP) {
+      let m = midi;
+      while (m < minP) m += 12;
+      while (m > maxP) m -= 12;
+      return m;
+    }
+
+function diatonicTriad(degree, center = 60) {
+      const scale = getScaleSemis(); // length 7
+      const root = rootMidiNear(center);
+      const d0 = degree - 1; // 0~6
+      const steps = [0, 2, 4]; // 1-3-5
+
+      return steps.map(step => {
+        const idx = d0 + step;
+        const oct = Math.floor(idx / 7) * 12;
+        const deg = idx % 7;
+        return root + scale[deg] + oct;
+      });
+    }
+
+    
+// =========================
+// 코드 보이싱(자리바꿈) 개선: 공통음 유지 + 최소 이동
+// =========================
+function getNotesAtCursor(track, col) {
+  const out = [];
+  for (const n of track.notes) {
+    if (posToCol(n.bar, n.beat) === col) out.push(n.pitch);
+  }
+  return out.sort((a,b)=>a-b);
+}
+
+function pitchClass(n) { return ((n % 12) + 12) % 12; }
+
+function triadPitchClasses(degree) {
+  // diatonicTriad 결과를 이용해 pitch class 3개를 얻는다
+  const base = diatonicTriad(degree, getGridCenterMidi());
+  const pcs = [];
+  for (const n of base) {
+    const pc = pitchClass(n);
+    if (!pcs.includes(pc)) pcs.push(pc);
+  }
+  return pcs.slice(0, 3);
+}
+
+function generateTriadVoicings(pcs, minP, maxP, targetCenter) {
+  // pcs length 3
+  const baseOct = Math.floor(targetCenter / 12) * 12;
+
+  // root position near center
+  let base = pcs.map(pc => baseOct + pc).sort((a,b)=>a-b);
+  // ascending
+  for (let i=1; i<base.length; i++) while (base[i] < base[i-1]) base[i] += 12;
+
+  const cands = [];
+
+  const add = (arr) => {
+    let c = arr.slice().sort((a,b)=>a-b);
+    c = shiftChordIntoRange(c, minP, maxP, targetCenter);
+    if (c.every(n => n >= minP && n <= maxP)) cands.push(c);
+  };
+
+  add(base);
+  add([base[1], base[2], base[0] + 12]); // 1st inv
+  add([base[2], base[0] + 12, base[1] + 12]); // 2nd inv
+
+  // octave variants
+  const seen = new Set();
+  const expanded = [];
+  for (const c of cands) {
+    for (const k of [-24, -12, 0, 12, 24]) {
+      const shifted = c.map(n => n + k);
+      const fixed = shiftChordIntoRange(shifted, minP, maxP, targetCenter);
+      const key = fixed.join(",");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (fixed.every(n => n >= minP && n <= maxP)) expanded.push(fixed);
+    }
+  }
+  return expanded.length ? expanded : cands;
+}
+
+function scoreAgainstReference(ref, cand) {
+  // ref, cand sorted length 3
+  let s = 0;
+  for (let i=0; i<3; i++) s += Math.abs(ref[i] - cand[i]);
+  return s;
+}
+
+function commonToneBonus(ref, cand) {
+  // common pitch classes bonus (lower is better)
+  const refPcs = new Set(ref.map(pitchClass));
+  const candPcs = new Set(cand.map(pitchClass));
+  let common = 0;
+  for (const pc of candPcs) if (refPcs.has(pc)) common++;
+  if (common === 3) return -60;
+  if (common === 2) return -30;
+  if (common === 1) return -10;
+  return 0;
+}
+
+function chooseVoicingWithVoiceLeading(degree, track, col) {
+  const minP = Math.min(...pitches);
+  const maxP = Math.max(...pitches);
+  const center = getGridCenterMidi();
+
+  const pcs = triadPitchClasses(degree);
+  if (pcs.length < 3) {
+    let chord = diatonicTriad(degree, center);
+    return shiftChordIntoRange(chord, minP, maxP, center);
+  }
+
+  const candidates = generateTriadVoicings(pcs, minP, maxP, center);
+
+  const existing = getNotesAtCursor(track, col);
+  if (existing.length >= 3) {
+    // choose a 3-note window closest to center
+    let ref = existing.slice(0, 3);
+    let bestDist = Infinity;
+    for (let i=0; i<=existing.length-3; i++) {
+      const w = existing.slice(i, i+3);
+      const avg = (w[0] + w[1] + w[2]) / 3;
+      const dist = Math.abs(avg - center);
+      if (dist < bestDist) { bestDist = dist; ref = w; }
+    }
+
+    let best = candidates[0] || diatonicTriad(degree, center);
+    let bestScore = Infinity;
+    for (const c of candidates) {
+      const score = scoreAgainstReference(ref, c) + commonToneBonus(ref, c);
+      if (score < bestScore) { bestScore = score; best = c; }
+    }
+    return best;
+  }
+
+  // no reference: pick closest to center
+  let best = candidates[0] || diatonicTriad(degree, center);
+  let bestScore = Infinity;
+  for (const c of candidates) {
+    const avg = (c[0] + c[1] + c[2]) / 3;
+    const score = Math.abs(avg - center);
+    if (score < bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+async function playChord(degree) {
+  const inst = await ensurePiano();
+  const audioCtx = Tone.getContext().rawContext;
+  const now = audioCtx.currentTime;
+
+  const track = project.tracks[0];
+  const minP = Math.min(...pitches);
+  const maxP = Math.max(...pitches);
+
+  // 보이싱(자리바꿈) 선택: 공통음 유지 + 최소 이동
+  let chord = chooseVoicingWithVoiceLeading(degree, track, cursorCol);
+
+  // (안전) chord 내부 중복 제거 + 범위 필터
+  chord = Array.from(new Set(chord)).filter(n => n >= minP && n <= maxP);
+
+  const dur = 0.9;
+
+  // 항상 오디션(미리듣기)
+  for (const p of chord) {
+    inst.play(p, now, { duration: dur, gain: 0.9 });
+  }
+
+  // 정지 상태일 때만: 커서 위치에 "찍기"
+  if (Tone.Transport.state !== "started") {
+    const chordLen = insertLen;
+
+    const bar = Math.floor(cursorCol / 16) + 1;
+    const beat = (cursorCol % 16) + 1;
+
+    pushHistory();
+
+    for (const p of chord) {
+      // 중복 방지: 같은 커서 위치(같은 col) + 같은 pitch가 이미 있으면 추가하지 않음
+      const exists = track.notes.some(n =>
+        posToCol(n.bar, n.beat) === cursorCol && n.pitch === p
+      );
+      if (exists) continue;
+
+      track.notes.push({
+        id: nextNoteId++,
+        bar,
+        beat,
+        length: chordLen,
+        pitch: p
+      });
+    }
+
+    renderNotes();
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "select" || tag === "textarea") return;
+
+      if (e.key >= "1" && e.key <= "7") {
+        e.preventDefault();
+        playChord(Number(e.key));
+      }
+    });
+    function stop() {
+  if (Tone.Transport.state === "started") {
+    const bpm = Tone.Transport.bpm.value;
+    const secPer16 = (60 / bpm) / 4;
+    const col = Math.max(0, Math.min(totalCols - 1, Math.floor(Tone.Transport.seconds / secPer16)));
+    setCursorCol(col);
+  }
+  Tone.Transport.stop();
+  Tone.Transport.cancel();
+  stopPlayheadLoop();
+}
 
     // =========================
     // MIDI 내보내기
@@ -636,7 +1146,11 @@ async function play() {
     buildTimeline();
     buildGrid();
     renderNotes();
-  </script>
-
+    applyKey();
+  
+    initInsertLenButtons();setCursorCol(0);
+    updatePlayheadVisual(0);
+    
+</script>
 </body>
 </html>
