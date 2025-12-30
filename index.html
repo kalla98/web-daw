@@ -185,12 +185,26 @@
 /* Editing state outline colors */
 .note.editing { outline: 2px solid #111; }
 .note.editing.moving { outline: 2px solid #d00; }
-  </style>
+  
+  .partheader {
+    max-width: 980px;
+    padding: 10px;
+    margin-bottom: 6px;
+    border-radius: 6px;
+    color: #fff;
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+    .readonly #grid, .readonly #notesLayer { pointer-events: none; }
+    .readonlyHint { font-size: 12px; color:#666; margin:6px 0 0; }
+</style>
+
 
 </head>
 
 <body>
-  <h1>My Web DAW v28</h1>
+  <h1>My Web DAW v50</h1>
   <div class="toolbar">
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
@@ -236,7 +250,18 @@
       <button type="button" data-len="1" class="active">1/16</button>
     </span>
 
-    <span style="margin-left:12px;">Chords</span>
+    
+<span style="margin-left:12px;">Parts</span>
+    <button onclick="setViewMode('full')">Full</button>
+    <button onclick="setViewMode('part')">Part</button>
+<button onclick="switchPart('verseA1')">Verse A 1/2</button>
+<button onclick="switchPart('verseA2')">Verse A 2/2</button>
+<button onclick="switchPart('pre1')">Pre 1/2</button>
+<button onclick="switchPart('pre2')">Pre 2/2</button>
+<button onclick="switchPart('chorus1')">Chorus 1/2</button>
+<button onclick="switchPart('chorus2')">Chorus 2/2</button>
+
+<span style="margin-left:12px;">Chords</span>
     <button onclick="playChord(1)">I</button>
     <button onclick="playChord(2)">ii</button>
     <button onclick="playChord(3)">iii</button>
@@ -247,13 +272,15 @@
 
 
     <button onclick="clearNotes()" style="margin-left:auto;">노트 전체 삭제</button>
-  </div>
+  
+</div>
 
   <div class="legend">
     16분 해상도(1박=4칸) · 4마디 · 클릭=생성(16분 1칸) · 드래그=길이 · 시작칸 클릭=삭제 · Cmd/Ctrl+Z=Undo
   </div>
 
-  <div class="topbar">
+  <div class="partheader" id="partHeader"></div>
+<div class="topbar">
     <div></div>
     <div id="timeline" class="timeline"></div>
   </div>
@@ -284,12 +311,146 @@
     // =========================
     // 프로젝트 데이터
     // =========================
-    const project = {
-      bpm: 90,
-      timeSignature: [4, 4],
-      bars: 4,
-      tracks: [{ name: "Piano", notes: [] }]
-    };
+    
+// =========================
+// Project / Parts Structure (v39)
+// =========================
+const PART_DEFS = [
+  { id: "verseA1",  label: "Verse A (1/2)",  color: "#4a90e2" },
+  { id: "verseA2",  label: "Verse A (2/2)",  color: "#6aa8f0" },
+  { id: "pre1",     label: "Pre-Chorus (1/2)", color: "#5cb85c" },
+  { id: "pre2",     label: "Pre-Chorus (2/2)", color: "#7ad07a" },
+  { id: "chorus1",  label: "Chorus (1/2)", color: "#d9534f" },
+  { id: "chorus2",  label: "Chorus (2/2)", color: "#e57373" },
+];
+
+const project = {
+  bpm: 90,
+  timeSignature: [4, 4],
+  bars: 4,               // each part is always 4 bars
+  currentPartId: "verseA1",
+  parts: {},
+  tracks: [{ name: "Piano", notes: [] }]
+};
+
+PART_DEFS.forEach(p => {
+  project.parts[p.id] = { notes: [] };
+});
+
+function syncFromPart() {
+  project.tracks[0].notes = project.parts[project.currentPartId].notes;
+}
+function syncToPart() {
+  project.parts[project.currentPartId].notes = project.tracks[0].notes;
+}
+
+// start on Verse A (1/2)
+syncFromPart();
+// =========================
+// View mode: part vs full (v42)
+// =========================
+let viewMode = "part";
+let lastInsertStep = 1; // "part" | "full"
+
+function recomputeCols() {
+  totalCols = project.bars * beatsPerBar * SUBDIV;
+}
+
+function rebuildUIAfterBarsChange() {
+  recomputeCols();
+  buildTimeline();
+  buildGrid();
+  renderNotes();
+  updatePlayheadVisual(cursorCol);
+}
+
+function buildCombinedNotesForFull() {
+  // persist current part edits first
+  syncToPart();
+
+  const combined = [];
+  let gid = 100000;
+  PART_DEFS.forEach((p, i) => {
+    const offset = i * 4; // 4 bars per part
+    const notes = project.parts[p.id].notes || [];
+    notes.forEach(n => {
+      combined.push({
+        id: gid++,
+        bar: n.bar + offset,
+        beat: n.beat,
+        length: n.length,
+        pitch: n.pitch
+      });
+    });
+  });
+  return combined;
+}
+
+function setViewMode(mode) {
+  if (mode === viewMode) return;
+
+  if (mode === "full") {
+    viewMode = "full";
+    project.bars = 24; // 6 parts * 4 bars
+    // show combined notes in the visible track (read-only mode)
+    project.tracks[0].notes = buildCombinedNotesForFull();
+  } else {
+    // back to part editing
+    viewMode = "part";
+    project.bars = 4;
+    syncFromPart();
+  }
+
+  // disable editing interactions in full view
+  gridEl.classList.toggle("readonly", viewMode === "full");
+
+  rebuildUIAfterBarsChange();
+  updatePartHeader();
+}
+
+window.setViewMode = setViewMode;
+
+
+
+// =========================
+// Part Switching (v40)
+// =========================
+function updatePartHeader() {
+  const h = document.getElementById("partHeader");
+  if (!h) return;
+  if (typeof viewMode !== "undefined" && viewMode === "full") {
+    h.textContent = "Full View · 24 Bars (Read-only)";
+    h.style.background = "#111";
+    return;
+  }
+  const p = PART_DEFS.find(x => x.id === project.currentPartId);
+  if (!p) return;
+  h.textContent = p.label + " · 4 Bars";
+  h.style.background = p.color;
+}
+
+// paint initial part header
+updatePartHeader();
+
+function switchPart(partId) {
+  if (!project.parts[partId]) return;
+
+  // save current visible notes into the current part
+  syncToPart();
+
+  // switch
+  project.currentPartId = partId;
+
+  // load selected part notes into visible track
+  syncFromPart();
+
+  renderNotes();
+  updatePartHeader();
+}
+
+// expose for inline onclick
+window.switchPart = switchPart;
+
 
     // =========================
     // 피아노롤 설정
@@ -298,7 +459,7 @@
     const PITCH_MAX = 71; // B4
 
     const beatsPerBar = project.timeSignature[0]; // 4
-    const totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
+    let totalCols = project.bars * beatsPerBar * SUBDIV; // 4 bars * 4 beats * 4 = 64
 
     let pitches = [];
     for (let p = PITCH_MAX; p >= PITCH_MIN; p--) pitches.push(p);
@@ -366,6 +527,7 @@
       const btns = Array.from(seg.querySelectorAll("button[data-len]"));
       const setActive = (len) => {
         insertLen = len;
+        lastInsertStep = len;
         btns.forEach(b => b.classList.toggle("active", Number(b.dataset.len) === len));
       };
       btns.forEach(b => b.addEventListener("click", () => setActive(Number(b.dataset.len))));
@@ -439,6 +601,21 @@ function updatePlayheadVisual(col) {
   playheadEl.style.left = `${col * CELL}px`;
   playheadEl.classList.remove("hidden");
 }
+
+function advanceCursorAfterInsert() {
+  const step = lastInsertStep || 1; // step is in 16th-cells (1=1/16, 2=1/8, 4=1/4)
+  cursorCol = Math.min(cursorCol + step, totalCols - 1);
+  updatePlayheadVisual(cursorCol);
+
+  // keep cursor visible
+  const wrap = document.querySelector(".gridwrap");
+  if (wrap) {
+    const x = cursorCol * CELL; // CELL is px per column
+    if (x < wrap.scrollLeft + 20) wrap.scrollLeft = Math.max(0, x - 20);
+    if (x > wrap.scrollLeft + wrap.clientWidth - 40) wrap.scrollLeft = x - (wrap.clientWidth - 40);
+  }
+}
+
 
 function setCursorCol(col) {
       stopArmed = false;
@@ -699,6 +876,7 @@ function clearPressTimer() {
 }
     
 gridEl.addEventListener("pointerdown", (e) => {
+      if (typeof viewMode !== 'undefined' && viewMode === 'full') return;
   const cell = document.elementFromPoint(e.clientX, e.clientY);
   if (!cell || !cell.classList.contains("cell")) return;
 
@@ -1157,6 +1335,7 @@ function chooseVoicingWithVoiceLeading(degree, track, col) {
 }
 
 async function playChord(degree) {
+      if (typeof viewMode !== "undefined" && viewMode === "full") return;
   const inst = await ensurePiano();
   const audioCtx = Tone.getContext().rawContext;
   const now = audioCtx.currentTime;
@@ -1182,6 +1361,9 @@ async function playChord(degree) {
   if (Tone.Transport.state !== "started") {
     const chordLen = insertLen;
 
+  // remember current insert length for playhead advance
+  lastInsertStep = insertLen;
+
     const bar = Math.floor(cursorCol / 16) + 1;
     const beat = (cursorCol % 16) + 1;
 
@@ -1204,6 +1386,7 @@ async function playChord(degree) {
     }
 
     renderNotes();
+      advanceCursorAfterInsert();
   }
 }
 
@@ -1217,21 +1400,23 @@ document.addEventListener("keydown", (e) => {
       }
     });
     
+
 function stop() {
   const running = (Tone.Transport.state === "started");
   if (running) {
+    // 1st press while playing: stop
     stopOnceInternal();
     stopArmed = true;
     return;
   }
-  if (stopArmed) {
-    setCursorCol(0);
-    // ensure viewport is back to start
-    const wrap = document.querySelector(".gridwrap");
-    if (wrap) wrap.scrollLeft = 0;
-    stopArmed = false;
-  }
+
+  // If already stopped: always jump to start of current view
+  setCursorCol(0);
+  const wrap = document.querySelector(".gridwrap");
+  if (wrap) wrap.scrollLeft = 0;
+  stopArmed = false;
 }
+
 
 function stopOnceInternal() {
   if (Tone.Transport.state === "started") {
