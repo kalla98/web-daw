@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v65</title>
+  <title>My Web DAW v66</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v65</h1>
+  <h1>My Web DAW v66</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -329,7 +329,17 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     </div>
   </div>
 
-  <script src="https://unpkg.com/tone/build/Tone.js"></script>
+  <script src="https://unpkg.com/tone/build/Tone.js">
+// FIRST_GESTURE_AUDIO_PRIME
+(function(){
+  function onFirstGesture(){
+    try { primeAudio(); } catch(e) {}
+  }
+  document.addEventListener('touchstart', onFirstGesture, { once:true, capture:true, passive:false });
+  document.addEventListener('pointerdown', onFirstGesture, { once:true, capture:true, passive:false });
+})();
+
+</script>
   <script src="https://unpkg.com/@tonejs/midi/build/Midi.js"></script>
 
   <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
@@ -1294,6 +1304,11 @@ let pianoReadyPromise = null;
       if (!pianoInst) {
         pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
       }
+
+function primeAudio() {
+  // Must be called from a user gesture
+  return Tone.start().then(() => ensurePiano()).catch(() => {});
+}
       return pianoInst;
     }
 
@@ -1302,24 +1317,16 @@ let pianoReadyPromise = null;
 // =========================
 
 
+
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // Gesture-safe: call ensurePiano() immediately (not deferred to microtask)
-  const mySeq = ++auditionSeq;
-
-  try {
-    const p = ensurePiano(); // Tone.start() happens inside ensurePiano within this call stack
-    Promise.resolve(p).then(() => {
-      if (mySeq !== auditionSeq) return; // drop older clicks
-      if (!pianoInst) return;
-
-      const audioCtx = (window.Tone ? Tone.getContext().rawContext : (_sfCtx || null));
-      const now = (audioCtx ? audioCtx.currentTime : 0) + 0.01;
-      try {
-        pianoInst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
-      } catch (e) {}
-    }).catch(() => {});
-  } catch (e) {}
+  // Simple + reliable: start loading immediately, play once instrument is ready
+  ensurePiano().then((inst) => {
+    const audioCtx = Tone.getContext().rawContext;
+    const now = audioCtx.currentTime;
+    inst.play(pitchToMidi(pitch), now + 0.01, { duration: lenSeconds, gain: 0.9 });
+  }).catch(() => {});
 }
+
 
 
 
