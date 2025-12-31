@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v60.5</title>
+  <title>My Web DAW v61</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v60.5</h1>
+  <h1>My Web DAW v61</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1308,30 +1308,76 @@ gridEl.addEventListener("touchmove", (e) => {
     }
 
 // =========================
-// 오디션(미리듣기): 노트 생성 시 즉시 소리
+// 오디션(미리듣기): 노트 생성/이동 후 즉시 소리
 // =========================
-function primeAudio() {
+async function ensureAudioStarted() {
+  try {
+    // 모바일/데스크탑 모두: 첫 제스처에서 반드시 컨텍스트를 깨운다
+    if (Tone.getContext().state !== "running") {
+      await Tone.start();
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
+async function primeAudio() {
   if (audioPrimed) return;
   audioPrimed = true;
-  // 로딩은 비동기로 시작 (첫 터치/클릭에서 “예열”)
-  ensurePiano().catch(() => { audioPrimed = false; });
+  try {
+    await ensureAudioStarted();
+  } catch (e) {}
+  // 악기 로딩은 비동기로 시작 (첫 터치/클릭에서 “예열”)
+  ensurePiano().catch(() => { /* ignore */ });
 }
 
 // 첫 사용자 제스처에서 오디오/악기 예열
-document.addEventListener("pointerdown", primeAudio, { once: true, passive: true });
+document.addEventListener("pointerdown", () => { primeAudio(); }, { once: true, passive: true });
+document.addEventListener("touchstart", () => { primeAudio(); }, { once: true, passive: true });
+
+// 피아노가 아직 로딩 중일 때도 즉각 피드백(간단 비프) 주기
+function fallbackBeep(pitch, lenSeconds = 0.18) {
+  try {
+    const ctx = Tone.getContext().rawContext;
+    if (!ctx || ctx.state !== "running") return;
+    const midi = pitchToMidi(pitch);
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+    const t0 = ctx.currentTime + 0.001;
+
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, t0);
+
+    g.gain.setValueAtTime(0.0, t0);
+    g.gain.linearRampToValueAtTime(0.15, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(0.05, lenSeconds));
+
+    osc.connect(g);
+    g.connect(ctx.destination);
+
+    osc.start(t0);
+    osc.stop(t0 + Math.max(0.06, lenSeconds) + 0.02);
+  } catch (e) {}
+}
 
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // 로딩 지연 때문에 “한꺼번에 후루룩” 재생되는 현상 방지:
-  // 가장 마지막 요청만 재생한다.
-  const seq = ++auditionSeq;
+  // 컨텍스트/악기 준비
+  primeAudio();
 
-  ensurePiano().then((inst) => {
-    if (seq !== auditionSeq) return;
+  // 피아노가 준비된 경우: 바로 피아노로 재생
+  if (pianoInst) {
+    try {
+      const audioCtx = Tone.getContext().rawContext;
+      const now = audioCtx.currentTime + 0.01;
+      pianoInst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
+    } catch (e) {}
+    return;
+  }
 
-    const audioCtx = Tone.getContext().rawContext;
-    const now = audioCtx.currentTime + 0.01; // 아주 약간의 헤드룸
-    inst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
-  }).catch(() => {});
+  // 아직 로딩 중이면: 즉시 비프(후루룩 방지), 로딩은 계속 진행
+  fallbackBeep(pitch, Math.min(0.18, lenSeconds));
+  // 로딩 완료 후 "자동 재생"은 하지 않는다 (모바일에서 후루룩 방지)
 }
 
 
