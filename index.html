@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v61</title>
+  <title>My Web DAW v65</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v61</h1>
+  <h1>My Web DAW v65</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1281,104 +1281,47 @@ gridEl.addEventListener("touchmove", (e) => {
     // 재생/정지
     // =========================
     let pianoInst = null;
-    let pianoLoading = null;
-    let auditionSeq = 0;
-    let audioPrimed = false;
+let auditionSeq = 0;
+let pianoReadyPromise = null;
+
     Tone.Transport.bpm.value = project.bpm;
 
     function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
 
     async function ensurePiano() {
-      // 반드시 사용자 제스처 이후 호출되어야 Tone.start()가 허용됨
       await Tone.start();
       const audioCtx = Tone.getContext().rawContext;
-
-      if (pianoInst) return pianoInst;
-
-      // 로딩 중이면 같은 Promise를 공유
-      if (!pianoLoading) {
-        pianoLoading = Soundfont.instrument(audioCtx, "acoustic_grand_piano")
-          .then((inst) => {
-            pianoInst = inst;
-            return inst;
-          })
-          .finally(() => { pianoLoading = null; });
+      if (!pianoInst) {
+        pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
       }
-      return await pianoLoading;
+      return pianoInst;
     }
 
 // =========================
-// 오디션(미리듣기): 노트 생성/이동 후 즉시 소리
+// 오디션(미리듣기): 노트 생성 시 즉시 소리
 // =========================
-async function ensureAudioStarted() {
-  try {
-    // 모바일/데스크탑 모두: 첫 제스처에서 반드시 컨텍스트를 깨운다
-    if (Tone.getContext().state !== "running") {
-      await Tone.start();
-    }
-  } catch (e) {
-    // ignore
-  }
-}
 
-async function primeAudio() {
-  if (audioPrimed) return;
-  audioPrimed = true;
-  try {
-    await ensureAudioStarted();
-  } catch (e) {}
-  // 악기 로딩은 비동기로 시작 (첫 터치/클릭에서 “예열”)
-  ensurePiano().catch(() => { /* ignore */ });
-}
-
-// 첫 사용자 제스처에서 오디오/악기 예열
-document.addEventListener("pointerdown", () => { primeAudio(); }, { once: true, passive: true });
-document.addEventListener("touchstart", () => { primeAudio(); }, { once: true, passive: true });
-
-// 피아노가 아직 로딩 중일 때도 즉각 피드백(간단 비프) 주기
-function fallbackBeep(pitch, lenSeconds = 0.18) {
-  try {
-    const ctx = Tone.getContext().rawContext;
-    if (!ctx || ctx.state !== "running") return;
-    const midi = pitchToMidi(pitch);
-    const freq = 440 * Math.pow(2, (midi - 69) / 12);
-    const t0 = ctx.currentTime + 0.001;
-
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, t0);
-
-    g.gain.setValueAtTime(0.0, t0);
-    g.gain.linearRampToValueAtTime(0.15, t0 + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + Math.max(0.05, lenSeconds));
-
-    osc.connect(g);
-    g.connect(ctx.destination);
-
-    osc.start(t0);
-    osc.stop(t0 + Math.max(0.06, lenSeconds) + 0.02);
-  } catch (e) {}
-}
 
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // 컨텍스트/악기 준비
-  primeAudio();
+  // Gesture-safe: call ensurePiano() immediately (not deferred to microtask)
+  const mySeq = ++auditionSeq;
 
-  // 피아노가 준비된 경우: 바로 피아노로 재생
-  if (pianoInst) {
-    try {
-      const audioCtx = Tone.getContext().rawContext;
-      const now = audioCtx.currentTime + 0.01;
-      pianoInst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
-    } catch (e) {}
-    return;
-  }
+  try {
+    const p = ensurePiano(); // Tone.start() happens inside ensurePiano within this call stack
+    Promise.resolve(p).then(() => {
+      if (mySeq !== auditionSeq) return; // drop older clicks
+      if (!pianoInst) return;
 
-  // 아직 로딩 중이면: 즉시 비프(후루룩 방지), 로딩은 계속 진행
-  fallbackBeep(pitch, Math.min(0.18, lenSeconds));
-  // 로딩 완료 후 "자동 재생"은 하지 않는다 (모바일에서 후루룩 방지)
+      const audioCtx = (window.Tone ? Tone.getContext().rawContext : (_sfCtx || null));
+      const now = (audioCtx ? audioCtx.currentTime : 0) + 0.01;
+      try {
+        pianoInst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
+      } catch (e) {}
+    }).catch(() => {});
+  } catch (e) {}
 }
+
+
 
 
     async function play() {
@@ -1782,6 +1725,10 @@ if (autoChordToggle) {
 bindTrackUI();
 updateTrackUI();
 
+
+// Warm up instrument loading on the very first user gesture
+document.addEventListener('pointerdown', () => { try { ensurePiano().catch(()=>{}); } catch(e) {} }, { once: true, passive: true });
+document.addEventListener('touchstart', () => { try { ensurePiano().catch(()=>{}); } catch(e) {} }, { once: true, passive: true });
 setCursorCol(0);
     updatePlayheadVisual(0);
     
