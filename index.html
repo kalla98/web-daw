@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v69</title>
+  <title>My Web DAW v70</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v69</h1>
+  <h1>My Web DAW v70</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1068,11 +1068,14 @@ function clearPressTimer() {
 }
     
 gridEl.addEventListener("pointerdown", (e) => {
+  primeOnce(); // don't await (must stay in user gesture call stack)
+
       if (typeof viewMode !== 'undefined' && viewMode === 'full') return;
   const cell = document.elementFromPoint(e.clientX, e.clientY);
   if (!cell || !cell.classList.contains("cell")) return;
 
   e.preventDefault();
+  
   gridEl.setPointerCapture(e.pointerId);
   lockGridScroll();
 
@@ -1291,59 +1294,82 @@ gridEl.addEventListener("touchmove", (e) => {
     // =========================
     // 재생/정지
     // =========================
+    
+    // =========================
+    // 재생/정지 + 오디오(사운드폰트)
+    // =========================
     let pianoInst = null;
-let auditionSeq = 0;
-let pianoReadyPromise = null;
+    let pianoReadyPromise = null;
+
+    // v70 안정화: iOS/모바일 첫 음 지연 완화용 프라임
+    let audioPrimed = false;
+    let primePromise = null;
+
+    // 오디션 중복 방지(빠르게 여러 번 찍을 때, 마지막 것만)
+    let auditionSeq = 0;
 
     Tone.Transport.bpm.value = project.bpm;
 
     function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
 
-    
     async function ensurePiano() {
-      const audioCtx = Tone.getContext().rawContext;
+      if (pianoInst) return pianoInst;
 
+      const audioCtx = Tone.getContext().rawContext;
       if (!pianoReadyPromise) {
-        // Start fetching/decoding ASAP (does not start audio playback)
+        // fetch/decode 시작 (오디오 재생은 아님)
         pianoReadyPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano").catch(() => null);
       }
-
-    // --- Audio unlock helper (must be global) ---
-    let _primePromise = null;
-    function primeAudio() {
-      if (_primePromise) return _primePromise;
-      _primePromise = (async () => {
-        try { if (window.Tone && Tone.start) await Tone.start(); } catch (e) {}
-        try { await ensurePiano(); } catch (e) {}
-      })();
-      return _primePromise;
-    }
-
-
-      if (!pianoInst) {
-        pianoInst = await pianoReadyPromise;
-      }
+      pianoInst = await pianoReadyPromise;
       return pianoInst;
     }
 
+    function primeOnce() {
+      if (audioPrimed) return primePromise || Promise.resolve();
 
-// =========================
-// 오디션(미리듣기): 노트 생성 시 즉시 소리
-// =========================
+      if (!primePromise) {
+        primePromise = (async () => {
+          try { if (window.Tone && Tone.start) await Tone.start(); } catch (e) {}
+
+          const inst = await ensurePiano();
+          if (inst) {
+            // 거의 무음에 가까운 워밍업 노트(샘플 디코드/경로 캐시 유도)
+            const ctx = Tone.getContext().rawContext;
+            const now = ctx.currentTime;
+            inst.play(60, now + 0.01, { duration: 0.05, gain: 0.0001 });
+          }
+
+          audioPrimed = true;
+        })();
+      }
+
+      return primePromise;
+    }
+
+    // 기존 코드 호환(여러 곳에서 primeAudio를 부를 수 있음)
+    function primeAudio() { return primeOnce(); }
+
+    // =========================
+    // 오디션(미리듣기)
+    //  - 노트 생성 시: 즉시 소리
+    //  - (모바일) 첫 클릭에서 오디오 잠금 해제 + 샘플 로딩 후 재생
+    // =========================
+    function auditionPitch(pitch, lenSeconds = 0.22) {
+      const token = ++auditionSeq;
+
+      primeOnce().then(async () => {
+        if (token !== auditionSeq) return;
+
+        const inst = await ensurePiano();
+        if (!inst) return;
+
+        const ctx = Tone.getContext().rawContext;
+        const t = ctx.currentTime + 0.005;
+        inst.play(pitch, t, { duration: lenSeconds, gain: 0.9 });
+      }).catch(() => {});
+    }
 
 
-
-
-function auditionPitch(pitch, lenSeconds = 0.22) {
-  // Ensure audio is unlocked + instrument is ready
-  if (typeof primeAudio==='function') primeAudio();
-  ensurePiano().then((inst) => {
-    if (!inst) return;
-    const audioCtx = Tone.getContext().rawContext;
-    const now = audioCtx.currentTime;
-    inst.play(pitchToMidi(pitch), now + 0.01, { duration: lenSeconds, gain: 0.9 });
-  }).catch(() => {});
-}
 
 
 
@@ -1351,6 +1377,8 @@ function auditionPitch(pitch, lenSeconds = 0.22) {
 
 
     async function play() {
+      await primeOnce();
+
       stopArmed = false;
   if (typeof primeAudio==='function') await primeAudio();
   const inst = await ensurePiano();
