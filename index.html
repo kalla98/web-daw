@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW</title>
+  <title>My Web DAW v59.5</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -198,14 +198,37 @@
 
     .readonly #grid, .readonly #notesLayer { pointer-events: none; }
     .readonlyHint { font-size: 12px; color:#666; margin:6px 0 0; }
+:root{
+  --bg-scale: #d9d9d9;     /* in key, not chord tone */
+  --bg-nonscale: #9a9a9a;  /* not in key */
+  --bg-chord: #ffffff;     /* chord tone */
+}
+body.presetActive .cell { background: var(--bg-nonscale); }
+body.presetActive .cell.scale { background: var(--bg-scale); }
+body.presetActive .cell.chord { background: var(--bg-chord); }
+
+    .trackbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 10px}
+    .trackbar .tbtn{border:1px solid #444;background:#1f1f1f;color:#eee;padding:6px 10px;border-radius:10px;font-size:14px;cursor:pointer}
+    .trackbar .tbtn.active{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.15) inset}
+    .trackbar .pill{display:inline-flex;align-items:center;gap:6px;margin-left:6px;font-size:12px;color:#bbb}
+    .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+
 </style>
 
 
 </head>
 
 <body>
-  <h1>My Web DAW v50</h1>
+  <h1>My Web DAW v59.5</h1>
   <div class="toolbar">
+  <div class="trackbar" id="trackBar">
+    <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
+    <button class="tbtn" data-track="keys" title="Keys (코드/건반)">Keys</button>
+    <button class="tbtn" data-track="bass" title="Bass">Bass</button>
+    <button class="tbtn" data-track="drums" title="Drums (드럼 UI는 다음 단계)">Drums</button>
+    <span class="pill">Selected: <span class="dot" id="trackDot" style="background:#2b7cff"></span><span id="trackLabel">melody</span></span>
+  </div>
+
     <button onclick="play()">재생</button>
     <button onclick="stop()">정지</button>
     <button onclick="exportMidi()">MIDI로 저장</button>
@@ -250,8 +273,19 @@
       <button type="button" data-len="1" class="active">1/16</button>
     </span>
 
-    
-<span style="margin-left:12px;">Parts</span>
+<span style="margin-left:12px;">Chord Preset</span>
+<select id="chordPresetSel">
+  <option value="">(none)</option>
+  <option value="p1">1) I–iii–IV–V (C–Em–F–G)</option>
+  <option value="p2">2) I–vi–IV–V (C–Am–F–G)</option>
+  <option value="p3">3) I–V–vi–IV (C–G–Am–F)</option>
+</select>
+<label style="display:inline-flex;align-items:center;gap:6px;margin-left:10px;">
+  <input type="checkbox" id="autoChordToggle" />
+  Auto Chords
+</label>
+
+    <span style="margin-left:12px;">Parts</span>
     <button onclick="setViewMode('full')">Full</button>
     <button onclick="setViewMode('part')">Part</button>
 <button onclick="switchPart('verseA1')">Verse A 1/2</button>
@@ -324,6 +358,79 @@ const PART_DEFS = [
   { id: "chorus2",  label: "Chorus (2/2)", color: "#e57373" },
 ];
 
+// === Track scaffold (v58) ===
+// We keep the existing single visible/editable piano-roll UI,
+// but internally each part owns 4 tracks. For now, the editor
+// always targets the activeTrackId ("melody" by default).
+const TRACK_DEFS = [
+  { id: "melody", label: "Melody", type: "pitched" },
+  { id: "keys",   label: "Keys",   type: "pitched" },
+  { id: "bass",   label: "Bass",   type: "pitched" },
+  { id: "drums",  label: "Drums",  type: "drum"   }
+];
+
+let activeTrackId = "melody";
+
+
+const TRACK_COLORS = {
+  melody: "#2b7cff",
+  keys:   "#8e44ad",
+  bass:   "#16a085",
+  drums:  "#c0392b"
+};
+
+function updateTrackUI() {
+  const bar = document.getElementById("trackBar");
+  if (!bar) return;
+  bar.querySelectorAll(".tbtn").forEach(b => {
+    b.classList.toggle("active", b.dataset.track === activeTrackId);
+  });
+  const dot = document.getElementById("trackDot");
+  const lbl = document.getElementById("trackLabel");
+  if (dot) dot.style.background = TRACK_COLORS[activeTrackId] || "#999";
+  if (lbl) lbl.textContent = activeTrackId;
+}
+
+function switchTrack(newId) {
+  if (!newId || newId === activeTrackId) return;
+
+  // Save current visible notes into current track
+  syncToPart();
+
+  // Switch track
+  activeTrackId = newId;
+
+  // Load new track notes into editor buffer
+  syncFromPart();
+
+  renderNotes();
+  updateTrackUI();
+}
+
+
+function bindTrackUI() {
+  const bar = document.getElementById("trackBar");
+  if (!bar) return;
+  bar.querySelectorAll(".tbtn").forEach(b => {
+    b.addEventListener("click", () => switchTrack(b.dataset.track));
+  });
+  updateTrackUI();
+}
+function ensurePartTracks(partObj) {
+  if (partObj.tracks) return;
+  partObj.tracks = {};
+  TRACK_DEFS.forEach(t => {
+    partObj.tracks[t.id] = { notes: [] };
+  });
+}
+
+function getActiveTrackNotes() {
+  const part = project.parts[project.currentPartId];
+  if (!part) return [];
+  ensurePartTracks(part);
+  return part.tracks[activeTrackId].notes;
+}
+
 const project = {
   bpm: 90,
   timeSignature: [4, 4],
@@ -334,16 +441,25 @@ const project = {
 };
 
 PART_DEFS.forEach(p => {
-  project.parts[p.id] = { notes: [] };
+  project.parts[p.id] = {}; ensurePartTracks(project.parts[p.id]);
 });
 
 function syncFromPart() {
-  project.tracks[0].notes = project.parts[project.currentPartId].notes;
+  project.tracks[0].notes = getActiveTrackNotes();
 }
 function syncToPart() {
-  project.parts[project.currentPartId].notes = project.tracks[0].notes;
+  const part = project.parts[project.currentPartId];
+  ensurePartTracks(part);
+  part.tracks[activeTrackId].notes = project.tracks[0].notes;
 }
 
+
+function getPartNotes(partId) {
+  const part = project.parts[partId];
+  if (!part) return [];
+  ensurePartTracks(part);
+  return part.tracks["melody"].notes; // v58: legacy behavior = melody only
+}
 // start on Verse A (1/2)
 syncFromPart();
 // =========================
@@ -372,7 +488,7 @@ function buildCombinedNotesForFull() {
   let gid = 100000;
   PART_DEFS.forEach((p, i) => {
     const offset = i * 4; // 4 bars per part
-    const notes = project.parts[p.id].notes || [];
+    const notes = getPartNotes(p.id) || [];
     notes.forEach(n => {
       combined.push({
         id: gid++,
@@ -445,7 +561,8 @@ function switchPart(partId) {
   syncFromPart();
 
   renderNotes();
-  updatePartHeader();
+  updateTrackUI();
+updatePartHeader();
 }
 
 // expose for inline onclick
@@ -489,7 +606,69 @@ window.switchPart = switchPart;
       return new Set(base.map(x => (x + currentKeyRoot) % 12));
     }
 
-    function isInCurrentKey(midi) {
+    // =========================
+// Chord presets (v51)
+// =========================
+const CHORD_PRESETS = {
+  p1: ["I","iii","IV","V"],   // C Em F G
+  p2: ["I","vi","IV","V"],    // C Am F G
+  p3: ["I","V","vi","IV"],    // C G Am F
+};
+
+// Roman triads -> scale degrees (major/minor)
+const ROMAN_DEGREES_MAJOR = { "I":[1,3,5], "ii":[2,4,6], "iii":[3,5,7], "IV":[4,6,1], "V":[5,7,2], "vi":[6,1,3], "vii°":[7,2,4] };
+const ROMAN_DEGREES_MINOR = { "i":[1,3,5], "ii°":[2,4,6], "III":[3,5,7], "iv":[4,6,1], "v":[5,7,2], "VI":[6,1,3], "VII":[7,2,4] };
+
+let activeChordPresetId = "";   // "", "p1" | "p2" | "p3"
+let autoChordEnabled = false;
+
+function getScalePcsArray() {
+  const base = getScaleSemis(); // semitones from tonic for current scale
+  return base.map(x => (x + currentKeyRoot) % 12); // 7 pitch classes
+}
+
+function getChordTonePcSetForBar(barIndex1Based) {
+  if (!activeChordPresetId) return null;
+  const preset = CHORD_PRESETS[activeChordPresetId];
+  if (!preset) return null;
+
+  const roman = preset[(barIndex1Based - 1) % 4];
+  const scalePcs = getScalePcsArray();
+  const degMap = (currentScaleType === "minor") ? ROMAN_DEGREES_MINOR : ROMAN_DEGREES_MAJOR;
+  const degrees = degMap[roman] || degMap[roman.replace("°","")] || null;
+  if (!degrees) return null;
+
+  const pcs = new Set();
+  degrees.forEach(deg => {
+    const idx = (deg - 1) % 7;
+    pcs.add(scalePcs[idx]);
+  });
+  return pcs;
+}
+
+function applyPresetToGridCells() {
+  document.body.classList.toggle("presetActive", !!activeChordPresetId);
+
+  const cells = gridEl.querySelectorAll(".cell");
+  cells.forEach(cell => {
+    const bar = Number(cell.dataset.bar);
+    const pitch = Number(cell.dataset.pitch);
+    const pc = ((pitch % 12) + 12) % 12;
+
+    const inScale = isInCurrentKey(pitch);
+    cell.classList.toggle("scale", inScale);
+
+    if (!activeChordPresetId) {
+      cell.classList.remove("chord");
+      return;
+    }
+    const chordPcs = getChordTonePcSetForBar(bar);
+    const inChord = chordPcs ? chordPcs.has(pc) : false;
+    cell.classList.toggle("chord", inChord);
+  });
+}
+
+function isInCurrentKey(midi) {
       return getScalePitchClassSet().has(((midi % 12) + 12) % 12);
     }
 
@@ -587,7 +766,9 @@ function colToTransportPos(col) {
   const quarters = Math.floor(beat16 / 4);
   const six = beat16 % 4;
   return `${measures}:${quarters}:${six}`;
-}
+      if (activeChordPresetId) applyPresetToGridCells();
+    }
+
 
 function noteToTransportPos(note) {
   const measures = note.bar - 1;
@@ -917,6 +1098,7 @@ gridEl.addEventListener("pointerdown", (e) => {
       dragState = {
         mode: "move",
         noteIndex: pendingNoteIndex,
+        moved: false,
       };
       renderNotes(n.id);
     }, LONGPRESS_MS);
@@ -936,7 +1118,10 @@ gridEl.addEventListener("pointerdown", (e) => {
   pushHistory();
   const n = { id: nextNoteId++, bar, beat: beat16, length: 1, pitch };
   notes.push(n);
-  dragState = { mode: "create", startCol: col, noteIndex: notes.length - 1, moved: false };
+  
+  // 🔊 audition on create
+  auditionPitch(pitch);
+dragState = { mode: "create", startCol: col, noteIndex: notes.length - 1, moved: false };
   renderNotes(n.id);
 });
 
@@ -991,6 +1176,9 @@ gridEl.addEventListener("pointermove", (e) => {
     const n = notes[dragState.noteIndex];
     if (!n) return;
 
+
+    // mark moved only if something actually changes
+    if (n.bar !== bar || n.beat !== beat16 || n.pitch !== pitch) dragState.moved = true;
     n.bar = bar;
     n.beat = beat16;
     n.pitch = pitch;
@@ -1050,6 +1238,15 @@ gridEl.addEventListener("pointerup", () => {
     return;
   }
 
+  // If we just finished moving a note, audition the final pitch once
+  if (dragState && dragState.mode === "move") {
+    const notes = project.tracks[0].notes;
+    const idx = dragState.noteIndex;
+    if (typeof idx === "number" && notes[idx] && dragState.moved) {
+      auditionPitch(notes[idx].pitch);
+    }
+  }
+
   // End create / move / resize
   dragState = null;
   pendingNoteIndex = null;
@@ -1096,6 +1293,19 @@ gridEl.addEventListener("touchmove", (e) => {
       }
       return pianoInst;
     }
+
+// =========================
+// 오디션(미리듣기): 노트 생성 시 즉시 소리
+// =========================
+function auditionPitch(pitch, lenSeconds = 0.22) {
+  // fire-and-forget (avoid blocking pointer handlers)
+  ensurePiano().then((inst) => {
+    const audioCtx = Tone.getContext().rawContext;
+    const now = audioCtx.currentTime;
+    inst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
+  }).catch(() => {});
+}
+
 
     async function play() {
       stopArmed = false;
@@ -1411,8 +1621,9 @@ function stop() {
   }
 
   // If already stopped: always jump to start of current view
+  // If already stopped: always jump to start of current view
   setCursorCol(0);
-  const wrap = document.querySelector(".gridwrap");
+const wrap = document.querySelector(".gridwrap");
   if (wrap) wrap.scrollLeft = 0;
   stopArmed = false;
 }
@@ -1475,7 +1686,29 @@ if (rangeSel) {
   rangeSel.addEventListener("change", () => setRangePreset(rangeSel.value));
   setRangePreset(rangeSel.value); // initial
 }
-    initInsertLenButtons();setCursorCol(0);
+    initInsertLenButtons();
+// Chord preset UI (inactive until user picks one)
+const chordPresetSel = document.getElementById("chordPresetSel");
+const autoChordToggle = document.getElementById("autoChordToggle");
+
+if (chordPresetSel) {
+  chordPresetSel.value = activeChordPresetId || "";
+  chordPresetSel.addEventListener("change", () => {
+    activeChordPresetId = chordPresetSel.value || "";
+    applyPresetToGridCells();
+  });
+}
+if (autoChordToggle) {
+  autoChordToggle.checked = !!autoChordEnabled;
+  autoChordToggle.addEventListener("change", () => {
+    autoChordEnabled = !!autoChordToggle.checked;
+  });
+}
+// Track UI (boot)
+bindTrackUI();
+updateTrackUI();
+
+setCursorCol(0);
     updatePlayheadVisual(0);
     
 </script>
