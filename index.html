@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v70</title>
+  <title>My Web DAW v71</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v70</h1>
+  <h1>My Web DAW v71</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1325,89 +1325,63 @@ gridEl.addEventListener("touchmove", (e) => {
     }
 
     function primeOnce() {
-      if (audioPrimed) return primePromise || Promise.resolve();
+      // iOS/Safari: must be resumed inside a user gesture. If it fails, allow retry on next gesture.
+      const ctx = (window.Tone && Tone.getContext) ? Tone.getContext().rawContext : null;
+      const isRunning = ctx && ctx.state === "running";
+
+      // If already primed AND context still running, we're done.
+      if (audioPrimed && isRunning) return primePromise || Promise.resolve();
+
+      // If context is not running, do NOT lock ourselves into "primed" forever.
+      if (!isRunning) {
+        audioPrimed = false;
+      }
 
       if (!primePromise) {
         primePromise = (async () => {
-          try { if (window.Tone && Tone.start) await Tone.start(); } catch (e) {}
-
-          const inst = await ensurePiano();
-          if (inst) {
-            // 거의 무음에 가까운 워밍업 노트(샘플 디코드/경로 캐시 유도)
-            const ctx = Tone.getContext().rawContext;
-            const now = ctx.currentTime;
-            inst.play(60, now + 0.01, { duration: 0.05, gain: 0.0001 });
+          try {
+            // Try to unlock/resume AudioContext. Must be called from a user gesture to succeed on mobile.
+            if (window.Tone && Tone.start) await Tone.start();
+          } catch (e) {
+            // If unlock fails, clear promise so we can retry on next gesture.
+            primePromise = null;
+            audioPrimed = false;
+            return;
           }
 
+          try {
+            const inst = await ensurePiano();
+            if (!inst) return;
+
+            const raw = Tone.getContext().rawContext;
+            const now = raw.currentTime;
+
+            // Near-silent warmup note to force sample decode.
+            inst.play(60, now + 0.01, { duration: 0.05, gain: 0.0001 });
+          } catch (e) {}
+
           audioPrimed = true;
-        })();
+
+          // If context got suspended again for any reason, allow future retry.
+          try {
+            const raw = Tone.getContext().rawContext;
+            if (raw && raw.state !== "running") audioPrimed = false;
+          } catch (e) {}
+        })().finally(() => {
+          // Allow future prime attempts if we are not running/primed.
+          try {
+            const raw = Tone.getContext().rawContext;
+            if (!audioPrimed || (raw && raw.state !== "running")) {
+              primePromise = null;
+            }
+          } catch (e) {
+            primePromise = null;
+          }
+        });
       }
 
       return primePromise;
     }
-
-    // 기존 코드 호환(여러 곳에서 primeAudio를 부를 수 있음)
-    function primeAudio() { return primeOnce(); }
-
-    // =========================
-    // 오디션(미리듣기)
-    //  - 노트 생성 시: 즉시 소리
-    //  - (모바일) 첫 클릭에서 오디오 잠금 해제 + 샘플 로딩 후 재생
-    // =========================
-    function auditionPitch(pitch, lenSeconds = 0.22) {
-      const token = ++auditionSeq;
-
-      primeOnce().then(async () => {
-        if (token !== auditionSeq) return;
-
-        const inst = await ensurePiano();
-        if (!inst) return;
-
-        const ctx = Tone.getContext().rawContext;
-        const t = ctx.currentTime + 0.005;
-        inst.play(pitch, t, { duration: lenSeconds, gain: 0.9 });
-      }).catch(() => {});
-    }
-
-
-
-
-
-
-
-
-    async function play() {
-      await primeOnce();
-
-      stopArmed = false;
-  if (typeof primeAudio==='function') await primeAudio();
-  const inst = await ensurePiano();
-
-  // 사용자 제스처 이후 오디오 시작(필수)
-  await Tone.start();
-
-  Tone.Transport.stop();
-  Tone.Transport.cancel();
-  Tone.Transport.bpm.value = project.bpm;
-
-  // 커서 위치에서 시작
-  Tone.Transport.position = colToTransportPos(cursorCol);
-
-  project.tracks.forEach(track => {
-    track.notes.forEach(note => {
-      Tone.Transport.schedule((time) => {
-        inst.play(
-          pitchToMidi(note.pitch),
-          time,
-          { duration: lengthToSeconds(note.length, project.bpm), gain: 0.9 }
-        );
-      }, noteToTransportPos(note));
-    });
-  });
-
-  Tone.Transport.start();
-  startPlayheadLoop();
-}
 
 
     // =========================
