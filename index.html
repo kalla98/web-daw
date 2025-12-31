@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v59.5</title>
+  <title>My Web DAW v60.5</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v59.5</h1>
+  <h1>My Web DAW v60.5</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1281,27 +1281,55 @@ gridEl.addEventListener("touchmove", (e) => {
     // 재생/정지
     // =========================
     let pianoInst = null;
+    let pianoLoading = null;
+    let auditionSeq = 0;
+    let audioPrimed = false;
     Tone.Transport.bpm.value = project.bpm;
 
     function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
 
     async function ensurePiano() {
+      // 반드시 사용자 제스처 이후 호출되어야 Tone.start()가 허용됨
       await Tone.start();
       const audioCtx = Tone.getContext().rawContext;
-      if (!pianoInst) {
-        pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
+
+      if (pianoInst) return pianoInst;
+
+      // 로딩 중이면 같은 Promise를 공유
+      if (!pianoLoading) {
+        pianoLoading = Soundfont.instrument(audioCtx, "acoustic_grand_piano")
+          .then((inst) => {
+            pianoInst = inst;
+            return inst;
+          })
+          .finally(() => { pianoLoading = null; });
       }
-      return pianoInst;
+      return await pianoLoading;
     }
 
 // =========================
 // 오디션(미리듣기): 노트 생성 시 즉시 소리
 // =========================
+function primeAudio() {
+  if (audioPrimed) return;
+  audioPrimed = true;
+  // 로딩은 비동기로 시작 (첫 터치/클릭에서 “예열”)
+  ensurePiano().catch(() => { audioPrimed = false; });
+}
+
+// 첫 사용자 제스처에서 오디오/악기 예열
+document.addEventListener("pointerdown", primeAudio, { once: true, passive: true });
+
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // fire-and-forget (avoid blocking pointer handlers)
+  // 로딩 지연 때문에 “한꺼번에 후루룩” 재생되는 현상 방지:
+  // 가장 마지막 요청만 재생한다.
+  const seq = ++auditionSeq;
+
   ensurePiano().then((inst) => {
+    if (seq !== auditionSeq) return;
+
     const audioCtx = Tone.getContext().rawContext;
-    const now = audioCtx.currentTime;
+    const now = audioCtx.currentTime + 0.01; // 아주 약간의 헤드룸
     inst.play(pitchToMidi(pitch), now, { duration: lenSeconds, gain: 0.9 });
   }).catch(() => {});
 }
