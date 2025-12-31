@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v66</title>
+  <title>My Web DAW v69</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -219,7 +219,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 </head>
 
 <body>
-  <h1>My Web DAW v66</h1>
+  <h1>My Web DAW v69</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -333,7 +333,8 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 // FIRST_GESTURE_AUDIO_PRIME
 (function(){
   function onFirstGesture(){
-    try { primeAudio(); } catch(e) {}
+    try { if (typeof primeAudio==='function') primeAudio();
+  } catch(e) {}
   }
   document.addEventListener('touchstart', onFirstGesture, { once:true, capture:true, passive:false });
   document.addEventListener('pointerdown', onFirstGesture, { once:true, capture:true, passive:false });
@@ -1298,19 +1299,33 @@ let pianoReadyPromise = null;
 
     function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
 
+    
     async function ensurePiano() {
-      await Tone.start();
       const audioCtx = Tone.getContext().rawContext;
-      if (!pianoInst) {
-        pianoInst = await Soundfont.instrument(audioCtx, "acoustic_grand_piano");
+
+      if (!pianoReadyPromise) {
+        // Start fetching/decoding ASAP (does not start audio playback)
+        pianoReadyPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano").catch(() => null);
       }
 
-function primeAudio() {
-  // Must be called from a user gesture
-  return Tone.start().then(() => ensurePiano()).catch(() => {});
-}
+    // --- Audio unlock helper (must be global) ---
+    let _primePromise = null;
+    function primeAudio() {
+      if (_primePromise) return _primePromise;
+      _primePromise = (async () => {
+        try { if (window.Tone && Tone.start) await Tone.start(); } catch (e) {}
+        try { await ensurePiano(); } catch (e) {}
+      })();
+      return _primePromise;
+    }
+
+
+      if (!pianoInst) {
+        pianoInst = await pianoReadyPromise;
+      }
       return pianoInst;
     }
+
 
 // =========================
 // 오디션(미리듣기): 노트 생성 시 즉시 소리
@@ -1318,9 +1333,12 @@ function primeAudio() {
 
 
 
+
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // Simple + reliable: start loading immediately, play once instrument is ready
+  // Ensure audio is unlocked + instrument is ready
+  if (typeof primeAudio==='function') primeAudio();
   ensurePiano().then((inst) => {
+    if (!inst) return;
     const audioCtx = Tone.getContext().rawContext;
     const now = audioCtx.currentTime;
     inst.play(pitchToMidi(pitch), now + 0.01, { duration: lenSeconds, gain: 0.9 });
@@ -1331,8 +1349,10 @@ function auditionPitch(pitch, lenSeconds = 0.22) {
 
 
 
+
     async function play() {
       stopArmed = false;
+  if (typeof primeAudio==='function') await primeAudio();
   const inst = await ensurePiano();
 
   // 사용자 제스처 이후 오디오 시작(필수)
