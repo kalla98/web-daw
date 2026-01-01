@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v69</title>
+  <title>My Web DAW v74</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -213,13 +213,51 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     .trackbar .pill{display:inline-flex;align-items:center;gap:6px;margin-left:6px;font-size:12px;color:#bbb}
     .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
 
-</style>
+    /* --- Start Overlay (audio unlock) --- */
+    body.needs-start { overflow: hidden; }
+    .startOverlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.72);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 9999;
+    }
+    .startOverlay.hidden { display: none; }
+    .startCard{
+      width: min(420px, 100%);
+      background: #111;
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+      text-align: center;
+    }
+    .startTitle{ font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+    .startDesc{ font-size: 14px; color: rgba(255,255,255,0.85); line-height: 1.35; margin: 0 0 12px; }
+    .startBtn{ font-size: 16px; padding: 10px 14px; min-width: 140px; }
+    .startMsg{ margin-top: 10px; font-size: 12px; color: rgba(255,255,255,0.75); min-height: 1.2em; }
+  </style>
 
 
 </head>
 
-<body>
-  <h1>My Web DAW v69</h1>
+<body class="needs-start">
+  <div id="startOverlay" class="startOverlay" role="dialog" aria-modal="true" aria-label="Start audio">
+    <div class="startCard">
+      <div class="startTitle">Start</div>
+      <div class="startDesc">
+        웹 오디오 정책 때문에, <b>처음 한 번</b>은 버튼을 눌러야 소리가 나요.
+      </div>
+      <button id="startBtn" class="btn primary startBtn">시작!</button>
+      <div id="startMsg" class="startMsg"></div>
+    </div>
+  </div>
+
+  <h1>My Web DAW v74</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -1792,6 +1830,50 @@ try { ensurePiano(); } catch(e) {}
 setCursorCol(0);
     updatePlayheadVisual(0);
     
+// --- Start Overlay wiring (audio unlock) ---
+(function initStartOverlay(){
+  const overlay = document.getElementById('startOverlay');
+  const btn = document.getElementById('startBtn');
+  const msg = document.getElementById('startMsg');
+  if (!overlay || !btn) return;
+
+  // keep UI blocked until unlocked
+  document.body.classList.add('needs-start');
+
+  let started = false;
+
+  async function doStart(){
+    if (started) return;
+    btn.disabled = true;
+    btn.textContent = '로딩중…';
+    if (msg) msg.textContent = '사운드 준비중…';
+    try {
+      // primeAudio handles Tone.start + instrument warmup with retries
+      await primeAudio({ retry: true });
+
+      started = true;
+      overlay.classList.add('hidden');
+      document.body.classList.remove('needs-start');
+
+      // restore button text for potential future use (not shown)
+      btn.textContent = '시작!';
+      if (msg) msg.textContent = '';
+    } catch (e) {
+      console.error(e);
+      btn.disabled = false;
+      btn.textContent = '시작!';
+      if (msg) msg.textContent = '안되면 한 번 더 눌러주세요.';
+    }
+  }
+
+  // User gesture: click/tap/pointerup
+  btn.addEventListener('click', doStart, { passive: true });
+  overlay.addEventListener('click', (e)=>{
+    // click on backdrop also starts (but avoid double triggering when button click bubbles)
+    if (e.target === overlay) doStart();
+  }, { passive: true });
+})();
+
 </script>
 </body>
 </html>
