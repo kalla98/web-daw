@@ -420,6 +420,10 @@ const TRACK_DEFS = [
 
 let activeTrackId = "melody";
 
+// Bass octave shift (2 octaves down)
+const BASS_OCTAVE_SHIFT = -24;
+let _bassShiftApplied = false;
+
 
 const TRACK_COLORS = {
   melody: "#2b7cff",
@@ -449,12 +453,39 @@ function switchTrack(newId) {
   // Switch track
   activeTrackId = newId;
 
+  // Bass: shift existing notes 2 octaves down (once)
+  if (activeTrackId === "bass") applyBassOctaveShiftOnce();
+
   // Load new track notes into editor buffer
   syncFromPart();
 
-  renderNotes();
+  applyTrackMode();
   updateTrackUI();
 }
+
+
+// =========================
+// Track mode -> pitches/labels (pitched vs drums)
+// =========================
+function applyTrackMode() {
+  // Preserve cursor + bars, just rebuild pitch rows/labels and visuals
+  if (isDrumTrack()) {
+    buildPitchList(DRUM_PITCHES_DESC);
+  } else if (activeTrackId === "bass") {
+    const preset = RANGE_PRESETS[currentRangeKey] || RANGE_PRESETS.male;
+    buildPitchData(preset.min + BASS_OCTAVE_SHIFT, preset.max + BASS_OCTAVE_SHIFT);
+  } else {
+    const preset = RANGE_PRESETS[currentRangeKey] || RANGE_PRESETS.male;
+    buildPitchData(preset.min, preset.max);
+  }
+
+  buildTimeline();
+  buildGrid();
+  renderNotes();
+  updatePlayheadVisual(cursorCol);
+  applyKey(); // will no-op in drums
+}
+
 
 
 function bindTrackUI() {
@@ -464,6 +495,22 @@ function bindTrackUI() {
     b.addEventListener("click", () => switchTrack(b.dataset.track));
   });
   updateTrackUI();
+}
+
+function applyBassOctaveShiftOnce() {
+  if (_bassShiftApplied) return;
+  try {
+    // Shift all existing bass notes in all parts so playback + display become consistent
+    PART_DEFS.forEach(p => {
+      const part = project.parts[p.id];
+      if (!part) return;
+      ensurePartTracks(part);
+      const tr = part.tracks["bass"];
+      if (!tr || !Array.isArray(tr.notes)) return;
+      tr.notes.forEach(n => { if (typeof n.pitch === "number") n.pitch += BASS_OCTAVE_SHIFT; });
+    });
+  } catch (e) {}
+  _bassShiftApplied = true;
 }
 function ensurePartTracks(partObj) {
   if (partObj.tracks) return;
@@ -609,9 +656,9 @@ function switchPart(partId) {
   // load selected part notes into visible track
   syncFromPart();
 
-  renderNotes();
+  applyTrackMode();
   updateTrackUI();
-updatePartHeader();
+  updatePartHeader();
 }
 
 // expose for inline onclick
@@ -696,6 +743,7 @@ function getChordTonePcSetForBar(barIndex1Based) {
 }
 
 function applyPresetToGridCells() {
+  if (isDrumTrack()) { document.body.classList.remove('presetActive'); return; }
   document.body.classList.toggle("presetActive", !!activeChordPresetId);
 
   const cells = gridEl.querySelectorAll(".cell");
@@ -718,10 +766,12 @@ function applyPresetToGridCells() {
 }
 
 function isInCurrentKey(midi) {
+      if (typeof isDrumTrack === 'function' && isDrumTrack()) return true;
       return getScalePitchClassSet().has(((midi % 12) + 12) % 12);
     }
 
     function updateKeyHighlights() {
+      if (isDrumTrack()) return;
       // 라벨: pitches 순서와 labelsEl 자식 순서가 같음
       const labelEls = labelsEl.querySelectorAll(".label");
       for (let i = 0; i < labelEls.length; i++) {
@@ -905,9 +955,40 @@ gridEl.addEventListener("selectstart", (e) => e.preventDefault());
     }
 
 
+// =========================
+// Drums (GM) - 9 rows
+// =========================
+// GM drum notes (channel 10). We keep only 9 core pieces for now.
+const DRUM_ROWS = [
+  { name: "Ride",        midi: 51 }, // Ride Cymbal 1
+  { name: "Crash",       midi: 49 }, // Crash Cymbal 1
+  { name: "Tom 1",       midi: 50 }, // High Tom
+  { name: "Tom 2",       midi: 47 }, // Low-Mid Tom
+  { name: "Tom 3",       midi: 43 }, // High Floor Tom
+  { name: "Open HH",     midi: 46 }, // Open Hi-Hat
+  { name: "Closed HH",   midi: 42 }, // Closed Hi-Hat
+  { name: "Snare",       midi: 38 }, // Acoustic Snare
+  { name: "Kick",        midi: 36 }, // Bass Drum 1
+];
+const DRUM_NAME_BY_MIDI = new Map(DRUM_ROWS.map(d => [d.midi, d.name]));
+const DRUM_PITCHES_DESC = DRUM_ROWS.map(d => d.midi).sort((a,b)=>b-a);
+
+function isDrumTrack() {
+  return activeTrackId === "drums";
+}
+
+function buildPitchList(listDesc){
+  pitches = [...listDesc]; // already desc (high -> low)
+  pitchToRow = new Map();
+  pitches.forEach((p,i)=>pitchToRow.set(p,i));
+}
+
 
 // ===== Range presets (MIDI) =====
+let currentRangeKey = 'male'; // remember last pitched range
+
 const RANGE_PRESETS = {
+
   full:  { min: 48, max: 71 }, // C3..B4 (2 oct)
   male:  { min: 52, max: 69 }, // E3..A4 (~1.5 oct)
   female:{ min: 55, max: 72 }  // G3..C5 (~1.5 oct)
@@ -921,12 +1002,15 @@ function buildPitchData(minMidi, maxMidi){
 }
 
 function setRangePreset(key){
+  if (typeof isDrumTrack==='function' && isDrumTrack()) return; // ignore while drums
+  currentRangeKey = key;
   const preset = RANGE_PRESETS[key] || RANGE_PRESETS.full;
   buildPitchData(preset.min, preset.max);
   buildGrid();
   renderNotes();
   updatePlayheadVisual(cursorCol);
 }
+
 
 
 function lockGridScroll() {
@@ -977,8 +1061,12 @@ function unlockGridScroll() {
       pitches.forEach(p => {
         const div = document.createElement("div");
         div.className = "label";
-        if (!isInCurrentKey(p)) div.classList.add("outKey");
-        div.textContent = midiToName(p);
+        if (!isDrumTrack()) {
+          if (!isInCurrentKey(p)) div.classList.add("outKey");
+          div.textContent = midiToName(p);
+        } else {
+          div.textContent = DRUM_NAME_BY_MIDI.get(p) || midiToName(p);
+        }
         labelsEl.appendChild(div);
       });
 
@@ -1002,7 +1090,9 @@ function unlockGridScroll() {
           const beat16 = (col % (beatsPerBar * SUBDIV)) + 1;
           const pitch = pitches[row];
 
-          if (!isInCurrentKey(pitch)) cell.classList.add("outKey");
+          if (!isDrumTrack()) {
+            if (!isInCurrentKey(pitch)) cell.classList.add("outKey");
+          }
 
           cell.dataset.bar = String(bar);
           cell.dataset.beat = String(beat16);
@@ -1327,11 +1417,41 @@ gridEl.addEventListener("touchmove", (e) => {
     }
 
     // =========================
-    // 재생/정지
+    // 재생/정지 + 악기(soundfont-player)
+    // - 기존처럼 Soundfont.instrument(...) 방식으로 트랙별 악기를 분리
     // =========================
-    let pianoInst = null;
-let auditionSeq = 0;
-let pianoReadyPromise = null;
+    let pianoInst = null;     // Keys
+    let oboeInst  = null;     // Melody
+    let bassInst  = null;     // Bass (finger)
+    let drumInst  = null;     // Drums (GM kit)
+
+    let auditionSeq = 0;
+
+    let pianoReadyPromise = null;
+    let oboeReadyPromise  = null;
+    let bassReadyPromise  = null;
+    
+let drumReadyPromise  = null;
+// Drum soundfont: use a real GM Standard Drum Kit (channel 10 / program 1 concept).
+// In soundfont-player we pick the kit instrument by name; channel routing isn't needed.
+let standardKitScriptPromise = null;
+function ensureStandardKitScript() {
+  if (standardKitScriptPromise) return standardKitScriptPromise;
+  standardKitScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-sf="gm-standard-kit"]');
+    if (existing) return resolve(true);
+    const s = document.createElement('script');
+    s.dataset.sf = "gm-standard-kit";
+    // FluidR3_GM provides "standard_kit" in MIDI.js soundfont format.
+    s.src = "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/standard_kit-mp3.js";
+    s.async = true;
+    s.onload = () => resolve(true);
+    s.onerror = () => reject(new Error("Failed to load GM standard_kit soundfont script"));
+    document.head.appendChild(s);
+  });
+  return standardKitScriptPromise;
+}
+
 
 // =========================
 // Audio unlock / prime (iOS safe)
@@ -1357,8 +1477,15 @@ function primeAudio({ retry = false } = {}) {
       if (rc && rc.state !== "running") await rc.resume();
     } catch (e) {}
 
-    // Kick off/await piano loading (fetch+decode can happen even if suspended)
-    try { await ensurePiano(); } catch (e) {}
+    // Kick off/await instrument loading (fetch+decode can happen even if suspended)
+    try {
+      await Promise.all([
+        ensurePiano(),   // Keys
+        ensureOboe(),    // Melody
+        ensureBass(),    // Bass
+        ensureDrums()    // Drums
+      ]);
+    } catch (e) {}
 
     // If still not running (iOS can refuse if not a real gesture), allow retry next time
     try {
@@ -1388,11 +1515,150 @@ function primeAudio({ retry = false } = {}) {
         pianoReadyPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano").catch(() => null);
       }
 
-      if (!pianoInst) {
-        pianoInst = await pianoReadyPromise;
-      }
+      if (!pianoInst) pianoInst = await pianoReadyPromise;
       return pianoInst;
     }
+
+    async function ensureOboe() {
+      const audioCtx = Tone.getContext().rawContext;
+      if (!oboeReadyPromise) {
+        oboeReadyPromise = Soundfont.instrument(audioCtx, "oboe").catch(() => null);
+      }
+      if (!oboeInst) oboeInst = await oboeReadyPromise;
+      return oboeInst;
+    }
+
+    async function ensureBass() {
+      const audioCtx = Tone.getContext().rawContext;
+      if (!bassReadyPromise) {
+        // GM Fingered Bass
+        bassReadyPromise = Soundfont.instrument(audioCtx, "electric_bass_finger").catch(() => null);
+      }
+      if (!bassInst) bassInst = await bassReadyPromise;
+      return bassInst;
+    }
+
+    
+async function ensureDrums() {
+  // We cannot rely on MIDI.js soundfonts for drum kits (many sets ship without percussion),
+  // so we build a small GM-style kit with Tone.js drum synths.
+  if (drumInst) return drumInst;
+
+  // Kick + Toms
+  const kickTom = new Tone.MembraneSynth({
+    pitchDecay: 0.04,
+    octaves: 8,
+    oscillator: { type: "sine" },
+    envelope: { attack: 0.001, decay: 0.35, sustain: 0.0, release: 0.01 }
+  }).toDestination();
+
+  // Snare (noise + short tone)
+  const snareNoise = new Tone.NoiseSynth({
+    noise: { type: "white" },
+    envelope: { attack: 0.001, decay: 0.18, sustain: 0.0, release: 0.02 }
+  }).toDestination();
+
+  const snareTone = new Tone.MembraneSynth({
+    pitchDecay: 0.02,
+    octaves: 2,
+    oscillator: { type: "triangle" },
+    envelope: { attack: 0.001, decay: 0.12, sustain: 0.0, release: 0.01 }
+  }).toDestination();
+
+  // Hi-hats + Cymbals
+  const hat = new Tone.MetalSynth({
+    frequency: 250,
+    envelope: { attack: 0.001, decay: 0.06, release: 0.01 },
+    harmonicity: 5.1,
+    modulationIndex: 32,
+    resonance: 4000,
+    octaves: 1.2
+  }).toDestination();
+
+  const cym = new Tone.MetalSynth({
+    frequency: 200,
+    envelope: { attack: 0.001, decay: 0.6, release: 0.2 },
+    harmonicity: 4.7,
+    modulationIndex: 60,
+    resonance: 6000,
+    octaves: 1.5
+  }).toDestination();
+
+  // Helper: scale overall level
+  function vel(g){ return Math.max(0, Math.min(1, (g ?? 1) * 0.9)); }
+
+  // Map GM note numbers to our 9 pieces:
+  // 36 Kick, 38 Snare, 42 Closed HH, 46 Open HH, 45/47/50 Toms, 49 Crash, 51 Ride
+  drumInst = {
+    play: (midi, time = 0, dur = 0.12, gain = 1) => {
+      const v = vel(gain);
+      const t = (time == null) ? Tone.now() : time;
+
+      // kick
+      if (midi === 36) {
+        kickTom.volume.value = -6 + (v * 6);
+        kickTom.triggerAttackRelease("C1", Math.max(0.08, dur), t);
+        return;
+      }
+
+      // snare
+      if (midi === 38) {
+        snareNoise.volume.value = -10 + (v * 6);
+        snareTone.volume.value  = -14 + (v * 6);
+        snareNoise.triggerAttackRelease(Math.max(0.08, dur * 0.8), t);
+        snareTone.triggerAttackRelease("D2", Math.max(0.06, dur * 0.5), t);
+        return;
+      }
+
+      // closed hat
+      if (midi === 42) {
+        hat.volume.value = -18 + (v * 8);
+        hat.envelope.decay = 0.05;
+        hat.triggerAttackRelease("16n", t);
+        return;
+      }
+
+      // open hat
+      if (midi === 46) {
+        hat.volume.value = -18 + (v * 8);
+        hat.envelope.decay = 0.25;
+        hat.triggerAttackRelease("8n", t);
+        return;
+      }
+
+      // toms
+      if (midi === 45 || midi === 47 || midi === 50) {
+        kickTom.volume.value = -10 + (v * 6);
+        const note = (midi === 45) ? "G1" : (midi === 47) ? "A1" : "C2";
+        kickTom.triggerAttackRelease(note, Math.max(0.10, dur), t);
+        return;
+      }
+
+      // crash
+      if (midi === 49) {
+        cym.volume.value = -20 + (v * 10);
+        cym.envelope.decay = 0.8;
+        cym.triggerAttackRelease("4n", t);
+        return;
+      }
+
+      // ride
+      if (midi === 51) {
+        cym.volume.value = -22 + (v * 10);
+        cym.envelope.decay = 0.45;
+        cym.triggerAttackRelease("8n", t);
+        return;
+      }
+
+      // fallback: treat as closed hat
+      hat.volume.value = -20 + (v * 8);
+      hat.envelope.decay = 0.06;
+      hat.triggerAttackRelease("16n", t);
+    }
+  };
+
+  return drumInst;
+}
 
 
 // =========================
@@ -1403,16 +1669,24 @@ function primeAudio({ retry = false } = {}) {
 
 
 function auditionPitch(pitch, lenSeconds = 0.22) {
-  // Ensure audio is unlocked + instrument is ready
+  // Ensure audio is unlocked + correct instrument is ready
   if (typeof primeAudio==='function') primeAudio();
-  ensurePiano().then((inst) => {
+  getActiveInstrument().then((inst) => {
     if (!inst) return;
     const audioCtx = Tone.getContext().rawContext;
     const now = audioCtx.currentTime;
-    inst.play(pitchToMidi(pitch), now + 0.01, { duration: lenSeconds, gain: 0.9 });
+    const isDr = (activeTrackId === "drums");
+    inst.play(pitchToMidi(pitch), now + 0.01, { duration: isDr ? 0.12 : lenSeconds, gain: isDr ? 1.0 : 0.9 });
   }).catch(() => {});
 }
 
+function getActiveInstrument() {
+  if (activeTrackId === "drums") return ensureDrums();
+  if (activeTrackId === "melody") return ensureOboe();
+  if (activeTrackId === "bass") return ensureBass();
+  // keys + default
+  return ensurePiano();
+}
 
 
 
@@ -1422,7 +1696,8 @@ function auditionPitch(pitch, lenSeconds = 0.22) {
   try{ await primeAudio(); }catch(e){}
       stopArmed = false;
   if (typeof primeAudio==='function') await primeAudio();
-  const inst = await ensurePiano();
+  // Make sure all instruments are loaded so per-track scheduling is stable
+  await Promise.all([ensurePiano(), ensureOboe(), ensureBass(), ensureDrums()]);
 
   // 사용자 제스처 이후 오디오 시작(필수)
   await Tone.start();
@@ -1434,17 +1709,50 @@ function auditionPitch(pitch, lenSeconds = 0.22) {
   // 커서 위치에서 시작
   Tone.Transport.position = colToTransportPos(cursorCol);
 
-  project.tracks.forEach(track => {
-    track.notes.forEach(note => {
+  // Schedule notes
+  if (typeof viewMode !== "undefined" && viewMode === "full") {
+    // Full view currently shows a single combined track in project.tracks[0]
+    const instForTrack = (activeTrackId === "drums") ? drumInst
+      : (activeTrackId === "melody") ? oboeInst
+      : (activeTrackId === "bass") ? bassInst
+      : pianoInst; // keys + default
+    const notes = (project.tracks && project.tracks[0] && project.tracks[0].notes) ? project.tracks[0].notes : [];
+    notes.forEach(note => {
       Tone.Transport.schedule((time) => {
-        inst.play(
+        const dur = (activeTrackId === "drums") ? 0.12 : lengthToSeconds(note.length, project.bpm);
+        const g   = (activeTrackId === "drums") ? 1.0  : 0.9;
+        instForTrack.play(
           pitchToMidi(note.pitch),
           time,
-          { duration: lengthToSeconds(note.length, project.bpm), gain: 0.9 }
+          { duration: dur, gain: g }
         );
       }, noteToTransportPos(note));
     });
-  });
+  } else {
+    // Part view: schedule all tracks from the current part (melody/keys/bass/drums)
+    const part = project.parts[project.currentPartId];
+    ensurePartTracks(part);
+    TRACK_DEFS.forEach(def => {
+      const tid = def.id;
+      const instForTrack = (tid === "drums") ? drumInst
+        : (tid === "melody") ? oboeInst
+        : (tid === "bass") ? bassInst
+        : pianoInst; // keys + default
+      if (!instForTrack) return;
+      const notes = (part.tracks[tid] && part.tracks[tid].notes) ? part.tracks[tid].notes : [];
+      notes.forEach(note => {
+        Tone.Transport.schedule((time) => {
+          const dur = (tid === "drums") ? 0.12 : lengthToSeconds(note.length, project.bpm);
+          const g   = (tid === "drums") ? 1.0  : 0.9;
+          instForTrack.play(
+            pitchToMidi(note.pitch),
+            time,
+            { duration: dur, gain: g }
+          );
+        }, noteToTransportPos(note));
+      });
+    });
+  }
 
   Tone.Transport.start();
   startPlayheadLoop();
@@ -1798,6 +2106,7 @@ function stopOnceInternal() {
 const rangeSel = document.getElementById("rangeSel");
 if (rangeSel) {
   rangeSel.addEventListener("change", () => setRangePreset(rangeSel.value));
+  currentRangeKey = rangeSel.value;
   setRangePreset(rangeSel.value); // initial
 }
     initInsertLenButtons();
@@ -1821,6 +2130,7 @@ if (autoChordToggle) {
 // Track UI (boot)
 bindTrackUI();
 updateTrackUI();
+applyTrackMode();
 
 
 // Warm up / unlock audio on the very first user gesture (iOS)
