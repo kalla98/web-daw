@@ -195,12 +195,58 @@
     font-weight: 600;
     font-size: 14px;
   }
+  /* === Chord Track (v85) === */
+  .chordtrack {
+    max-width: 980px;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr); /* 4 bars * half-bar */
+    gap: 6px;
+    margin: 8px 0 10px;
+  }
+  .chordslot {
+    border: 1px solid rgba(0,0,0,0.15);
+    background: rgba(59,130,246,0.10);
+    border-radius: 8px;
+    padding: 8px 6px;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 12px;
+    color: rgba(0,0,0,0.82);
+    user-select: none;
+  }
+  .chordslot.empty {
+    background: rgba(0,0,0,0.04);
+    color: rgba(0,0,0,0.35);
+    font-weight: 600;
+  }
+  .chordslot .rn { margin-right: 6px; }
+  .chordslot .cn { opacity: 0.85; font-weight: 700; }
+
+  .chordselect{
+    width: 100%;
+    height: 34px;
+    border: none;
+    outline: none;
+    background: transparent;
+    font: inherit;
+    font-weight: 800;
+    font-size: 12px;
+    text-align: center;
+    text-align-last: center;
+    padding: 0 6px;
+    cursor: pointer;
+  }
+  .chordselect option{ font-weight: 700; }
+
 
     .readonly #grid, .readonly #notesLayer { pointer-events: none; }
     .readonlyHint { font-size: 12px; color:#666; margin:6px 0 0; }
 :root{
   --bg-scale: #d9d9d9;     /* in key, not chord tone */
-  --bg-nonscale: #9a9a9a;  /* not in key */
+  --bg-nonscale: #111111;  /* not in key (strongly off) */
   --bg-chord: #ffffff;     /* chord tone */
 }
 body.presetActive .cell { background: var(--bg-nonscale); }
@@ -334,6 +380,13 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
 <button onclick="switchPart('chorus2')">Chorus 2/2</button>
 
 <span style="margin-left:12px;">Chords</span>
+    <span style="margin-left:16px;">Chord Rhythm</span>
+    <select id="chordRhythmSelect" style="height:26px; margin-left:6px;">
+      <option value="halfbar">2-beat (half-bar)</option>
+      <option value="beat4" selected>4-beat (each beat)</option>
+      <option value="arp8">Arp (8th)</option>
+    </select>
+
     <button onclick="playChord(1)">I</button>
     <button onclick="playChord(2)">ii</button>
     <button onclick="playChord(3)">iii</button>
@@ -352,6 +405,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
   </div>
 
   <div class="partheader" id="partHeader"></div>
+  <div class="chordtrack" id="chordTrack"></div>
 <div class="topbar">
     <div></div>
     <div id="timeline" class="timeline"></div>
@@ -390,6 +444,16 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     // =========================
     const CELL = 22;
     const SUBDIV = 4; // 1박(4분) = 4칸 = 16분 해상도
+
+    // Chord autoplay rhythm (Stage 4)
+    let chordRhythm = "beat4";
+    window.addEventListener("DOMContentLoaded", ()=>{
+      const sel = document.getElementById("chordRhythmSelect");
+      if (sel) {
+        chordRhythm = sel.value || chordRhythm;
+        sel.addEventListener("change", ()=>{ chordRhythm = sel.value; });
+      }
+    });
 
     // =========================
     // 프로젝트 데이터
@@ -483,7 +547,8 @@ function applyTrackMode() {
   buildGrid();
   renderNotes();
   updatePlayheadVisual(cursorCol);
-  applyKey(); // will no-op in drums
+  applyKey();
+    renderChordTrack(); // will no-op in drums
 }
 
 
@@ -520,6 +585,130 @@ function ensurePartTracks(partObj) {
   });
 }
 
+// =========================
+// Chord Track Data + UI (v85)
+// =========================
+const HALF_BARS_PER_PART = 8; // 4 bars * 2
+function ensurePartChords(partObj) {
+  if (partObj.chords) return;
+  partObj.chords = Array.from({ length: HALF_BARS_PER_PART }, () => ({ roman: "" }));
+}
+
+// Basic note naming (sharps only for now)
+const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+function romanToDegree(roman) {
+  // strip dim sign and non-letters
+  const r = String(roman || "").replace(/[^ivIV]/g, "");
+  const map = { "I":1,"II":2,"III":3,"IV":4,"V":5,"VI":6,"VII":7 };
+  const up = r.toUpperCase();
+  return map[up] || 1;
+}
+function romanQualitySuffix(roman) {
+  const s = String(roman || "");
+  if (s.includes("°")) return "dim";
+  // lowercase = minor (ii, iii, vi)
+  const letters = s.replace(/[^ivIV]/g,"");
+  if (letters && letters === letters.toLowerCase()) return "m";
+  return ""; // major
+}
+function chordNameFromRoman(roman) {
+  const scalePcs = getScalePcsArray(); // 7 pitch classes in current key/scale
+  const deg = romanToDegree(roman);
+  const rootPc = scalePcs[(deg - 1) % 7];
+  const rootName = NOTE_NAMES[rootPc % 12];
+  const q = romanQualitySuffix(roman);
+  if (q === "dim") return rootName + "dim";
+  if (q === "m") return rootName + "m";
+  return rootName;
+}
+
+function applyChordPresetToChordTrack() {
+  const part = project.parts[project.currentPartId];
+  if (!part) return;
+  ensurePartChords(part);
+  if (!activeChordPresetId) {
+    // keep existing chords; just re-render
+    renderChordTrack();
+    return;
+  }
+  const preset = CHORD_PRESETS[activeChordPresetId];
+  if (!preset) { renderChordTrack(); return; }
+  // preset is 4 bars -> expand to 8 half-bars by duplicating each bar
+  for (let i = 0; i < HALF_BARS_PER_PART; i++) {
+    const barIdx = Math.floor(i / 2); // 0..3
+    const roman = preset[barIdx % preset.length] || "";
+    part.chords[i].roman = roman;
+  }
+  renderChordTrack();
+  applyPresetToGridCells();
+}
+
+
+function getRomanOptionsForUi() {
+  // For now: classic diatonic triads by scale type.
+  if (currentScaleType === "minor") {
+    return ["i","ii°","III","iv","v","VI","VII"];
+  }
+  return ["I","ii","iii","IV","V","vi","vii°"];
+}
+
+function renderChordTrack() {
+  const wrap = document.getElementById("chordTrack");
+  if (!wrap) return;
+  const part = project.parts[project.currentPartId];
+  if (!part) { wrap.innerHTML = ""; return; }
+  ensurePartChords(part);
+
+  const romanList = getRomanOptionsForUi();
+
+  wrap.innerHTML = "";
+  for (let i = 0; i < HALF_BARS_PER_PART; i++) {
+    const slot = part.chords[i] || { roman: "" };
+    const roman = slot.roman || "";
+
+    const el = document.createElement("div");
+    el.className = "chordslot" + (roman ? "" : " empty");
+    el.dataset.idx = String(i);
+
+    const sel = document.createElement("select");
+    sel.className = "chordselect";
+
+    const optBlank = document.createElement("option");
+    optBlank.value = "";
+    optBlank.textContent = "—";
+    sel.appendChild(optBlank);
+
+    romanList.forEach(rn => {
+      const opt = document.createElement("option");
+      opt.value = rn;
+      opt.textContent = rn + " (" + chordNameFromRoman(rn) + ")";
+      sel.appendChild(opt);
+    });
+
+    sel.value = roman;
+
+    sel.addEventListener("change", () => {
+      const v = sel.value || "";
+      part.chords[i].roman = v;
+
+      // Manual edits should break "preset active" highlight (preset = one-shot action)
+      if (activeChordPresetId) {
+        activeChordPresetId = "";
+        const presetSel = document.getElementById("chordPresetSel");
+        if (presetSel) presetSel.value = "";
+        applyPresetToGridCells();
+      }
+      renderChordTrack();
+      applyPresetToGridCells();
+    });
+
+    el.appendChild(sel);
+    wrap.appendChild(el);
+  }
+}
+
+
 function getActiveTrackNotes() {
   const part = project.parts[project.currentPartId];
   if (!part) return [];
@@ -537,7 +726,7 @@ const project = {
 };
 
 PART_DEFS.forEach(p => {
-  project.parts[p.id] = {}; ensurePartTracks(project.parts[p.id]);
+  project.parts[p.id] = {}; ensurePartTracks(project.parts[p.id]); ensurePartChords(project.parts[p.id]);
 });
 
 function syncFromPart() {
@@ -658,7 +847,9 @@ function switchPart(partId) {
 
   applyTrackMode();
   updateTrackUI();
-  updatePartHeader();
+  updatePartHeader();  applyPresetToGridCells();
+  applyChordPresetToChordTrack();
+  renderChordTrack();
 }
 
 // expose for inline onclick
@@ -723,15 +914,15 @@ function getScalePcsArray() {
   return base.map(x => (x + currentKeyRoot) % 12); // 7 pitch classes
 }
 
-function getChordTonePcSetForBar(barIndex1Based) {
-  if (!activeChordPresetId) return null;
-  const preset = CHORD_PRESETS[activeChordPresetId];
-  if (!preset) return null;
+function getChordTonePcSetForRoman(roman) {
+  const rn = String(roman || "");
+  if (!rn) return null;
 
-  const roman = preset[(barIndex1Based - 1) % 4];
   const scalePcs = getScalePcsArray();
   const degMap = (currentScaleType === "minor") ? ROMAN_DEGREES_MINOR : ROMAN_DEGREES_MAJOR;
-  const degrees = degMap[roman] || degMap[roman.replace("°","")] || null;
+
+  // exact match first, then try without dim sign
+  const degrees = degMap[rn] || degMap[rn.replace("°","")] || null;
   if (!degrees) return null;
 
   const pcs = new Set();
@@ -742,28 +933,42 @@ function getChordTonePcSetForBar(barIndex1Based) {
   return pcs;
 }
 
+function getChordTonePcSetForHalfIndex(halfIdx0) {
+  const part = project.parts[project.currentPartId];
+  if (!part) return null;
+  ensurePartChords(part);
+  const slot = part.chords[halfIdx0];
+  if (!slot || !slot.roman) return null;
+  return getChordTonePcSetForRoman(slot.roman);
+}
+
 function applyPresetToGridCells() {
+  // Stage 4 grid shading: always show Scale (and Chord tones if chord track has values)
   if (isDrumTrack()) { document.body.classList.remove('presetActive'); return; }
-  document.body.classList.toggle("presetActive", !!activeChordPresetId);
+  document.body.classList.add("presetActive");
+
+  const part = project.parts[project.currentPartId];
+  if (part) ensurePartChords(part);
 
   const cells = gridEl.querySelectorAll(".cell");
   cells.forEach(cell => {
     const bar = Number(cell.dataset.bar);
+    const beat16 = Number(cell.dataset.beat);
     const pitch = Number(cell.dataset.pitch);
     const pc = ((pitch % 12) + 12) % 12;
 
     const inScale = isInCurrentKey(pitch);
     cell.classList.toggle("scale", inScale);
 
-    if (!activeChordPresetId) {
-      cell.classList.remove("chord");
-      return;
-    }
-    const chordPcs = getChordTonePcSetForBar(bar);
+    // Determine active half-bar slot for this cell
+    const col = (bar - 1) * (beatsPerBar * SUBDIV) + (beat16 - 1);
+    const halfIdx = Math.floor(col / 8); // 8 cols per half-bar
+    const chordPcs = getChordTonePcSetForHalfIndex(halfIdx);
     const inChord = chordPcs ? chordPcs.has(pc) : false;
     cell.classList.toggle("chord", inChord);
   });
 }
+
 
 function isInCurrentKey(midi) {
       if (typeof isDrumTrack === 'function' && isDrumTrack()) return true;
@@ -793,6 +998,8 @@ function isInCurrentKey(midi) {
       if (rootEl) currentKeyRoot = Number(rootEl.value);
       if (scaleEl) currentScaleType = scaleEl.value;
       updateKeyHighlights();
+      applyPresetToGridCells();
+      renderChordTrack();
     }
 
 
@@ -1540,144 +1747,60 @@ function primeAudio({ retry = false } = {}) {
 
     
 async function ensureDrums() {
-  // We cannot rely on MIDI.js soundfonts for drum kits (many sets ship without percussion),
-  // so we build a small GM-style kit with Tone.js drum synths.
-  if (drumInst) return drumInst;
+  // Sample-based GM drum kit using local MP3 files.
+  // NOTE: This REQUIRES serving this folder over http(s) (e.g., VSCode Live Server / python -m http.server).
+  // Opening the HTML via file:// will block fetch() and the samples won't load.
+  if (!drumReadyPromise) {
+    drumReadyPromise = (async () => {
+      // Create players (each key is a MIDI note number string)
+      const players = new Tone.Players({
+        "36": "samples/drums/kick.mp3",
+        "38": "samples/drums/snare.mp3",
+        "42": "samples/drums/hihat_closed.mp3",
+        "46": "samples/drums/hihat_open.mp3",
+        "50": "samples/drums/tom1.mp3",
+        "47": "samples/drums/tom2.mp3",
+        "43": "samples/drums/tom3.mp3",
+        "49": "samples/drums/crash.mp3",
+        "51": "samples/drums/ride.mp3"
+      }).toDestination();
 
-  // Kick + Toms
-  const kickTom = new Tone.MembraneSynth({
-    pitchDecay: 0.04,
-    octaves: 8,
-    oscillator: { type: "sine" },
-    envelope: { attack: 0.001, decay: 0.35, sustain: 0.0, release: 0.01 }
-  }).toDestination();
+      // Ensure buffers are loaded (Tone.js v15 uses global loader)
+      await Tone.loaded();
 
-  // Snare (noise + short tone)
-  const snareNoise = new Tone.NoiseSynth({
-    noise: { type: "white" },
-    envelope: { attack: 0.001, decay: 0.18, sustain: 0.0, release: 0.02 }
-  }).toDestination();
+      // Provide a soundfont-player-like interface: .play(midi, time, {duration, gain})
+      return {
+        _players: players,
+        play(midi, time, opts = {}) {
+          const key = String(Math.round(midi));
+          const p = players.player(key);
+          if (!p) return;
 
-  const snareTone = new Tone.MembraneSynth({
-    pitchDecay: 0.02,
-    octaves: 2,
-    oscillator: { type: "triangle" },
-    envelope: { attack: 0.001, decay: 0.12, sustain: 0.0, release: 0.01 }
-  }).toDestination();
+          // gain: 0..2 (linear) -> dB
+          const gain = (typeof opts.gain === "number") ? opts.gain : 1.0;
+          const g = Math.max(0.0, Math.min(2.0, gain));
+          try { p.volume.value = 20 * Math.log10(Math.max(0.0001, g)); } catch (e) {}
 
-  // Hi-hats + Cymbals
-  const hat = new Tone.MetalSynth({
-    frequency: 250,
-    envelope: { attack: 0.001, decay: 0.06, release: 0.01 },
-    harmonicity: 5.1,
-    modulationIndex: 32,
-    resonance: 4000,
-    octaves: 1.2
-  }).toDestination();
-
-  const cym = new Tone.MetalSynth({
-    frequency: 200,
-    envelope: { attack: 0.001, decay: 0.6, release: 0.2 },
-    harmonicity: 4.7,
-    modulationIndex: 60,
-    resonance: 6000,
-    octaves: 1.5
-  }).toDestination();
-
-  // Helper: scale overall level
-  function vel(g){ return Math.max(0, Math.min(1, (g ?? 1) * 0.9)); }
-
-  // Map GM note numbers to our 9 pieces:
-  // 36 Kick, 38 Snare, 42 Closed HH, 46 Open HH, 45/47/50 Toms, 49 Crash, 51 Ride
-  drumInst = {
-    play: (midi, time = 0, dur = 0.12, gain = 1) => {
-      const v = vel(gain);
-      const t = (time == null) ? Tone.now() : time;
-
-      // kick
-      if (midi === 36) {
-        kickTom.volume.value = -6 + (v * 6);
-        kickTom.triggerAttackRelease("C1", Math.max(0.08, dur), t);
-        return;
-      }
-
-      // snare
-      if (midi === 38) {
-        snareNoise.volume.value = -10 + (v * 6);
-        snareTone.volume.value  = -14 + (v * 6);
-        snareNoise.triggerAttackRelease(Math.max(0.08, dur * 0.8), t);
-        snareTone.triggerAttackRelease("D2", Math.max(0.06, dur * 0.5), t);
-        return;
-      }
-
-      // closed hat
-      if (midi === 42) {
-        hat.volume.value = -18 + (v * 8);
-        hat.envelope.decay = 0.05;
-        hat.triggerAttackRelease("16n", t);
-        return;
-      }
-
-      // open hat
-      if (midi === 46) {
-        hat.volume.value = -18 + (v * 8);
-        hat.envelope.decay = 0.25;
-        hat.triggerAttackRelease("8n", t);
-        return;
-      }
-
-      // toms
-      if (midi === 45 || midi === 47 || midi === 50) {
-        kickTom.volume.value = -10 + (v * 6);
-        const note = (midi === 45) ? "G1" : (midi === 47) ? "A1" : "C2";
-        kickTom.triggerAttackRelease(note, Math.max(0.10, dur), t);
-        return;
-      }
-
-      // crash
-      if (midi === 49) {
-        cym.volume.value = -20 + (v * 10);
-        cym.envelope.decay = 0.8;
-        cym.triggerAttackRelease("4n", t);
-        return;
-      }
-
-      // ride
-      if (midi === 51) {
-        cym.volume.value = -22 + (v * 10);
-        cym.envelope.decay = 0.45;
-        cym.triggerAttackRelease("8n", t);
-        return;
-      }
-
-      // fallback: treat as closed hat
-      hat.volume.value = -20 + (v * 8);
-      hat.envelope.decay = 0.06;
-      hat.triggerAttackRelease("16n", t);
-    }
-  };
-
+          // Hi-hat choke group (Closed 42 / Open 46): they should not overlap.
+          // We also play samples to their full length (no duration truncation).
+          const keyNum = String(Math.round(midi));
+          const isHat = (keyNum === "42" || keyNum === "46");
+          if (isHat) {
+            try { players.player("42")?.stop(time); } catch (e) {}
+            try { players.player("46")?.stop(time); } catch (e) {}
+          }
+          try {
+            // Play full sample length (ignore note length)
+            p.start(time);
+          } catch (e) {
+            // If buffer isn't loaded yet, ignore quietly
+          }
+        }
+      };
+    })();
+  }
+  if (!drumInst) drumInst = await drumReadyPromise;
   return drumInst;
-}
-
-
-// =========================
-// 오디션(미리듣기): 노트 생성 시 즉시 소리
-// =========================
-
-
-
-
-function auditionPitch(pitch, lenSeconds = 0.22) {
-  // Ensure audio is unlocked + correct instrument is ready
-  if (typeof primeAudio==='function') primeAudio();
-  getActiveInstrument().then((inst) => {
-    if (!inst) return;
-    const audioCtx = Tone.getContext().rawContext;
-    const now = audioCtx.currentTime;
-    const isDr = (activeTrackId === "drums");
-    inst.play(pitchToMidi(pitch), now + 0.01, { duration: isDr ? 0.12 : lenSeconds, gain: isDr ? 1.0 : 0.9 });
-  }).catch(() => {});
 }
 
 function getActiveInstrument() {
@@ -1686,6 +1809,21 @@ function getActiveInstrument() {
   if (activeTrackId === "bass") return ensureBass();
   // keys + default
   return ensurePiano();
+}
+
+function auditionPitch(pitchMidi) {
+  // Safe audition helper used by note placement / selection.
+  // pitchMidi is always a MIDI note number (drums use GM note numbers like 36/38/42...).
+  try {
+    const audioCtx = Tone.getContext().rawContext;
+    const now = audioCtx.currentTime;
+    Promise.resolve(getActiveInstrument()).then(inst => {
+      if (!inst) return;
+      const isDrum = (activeTrackId === "drums");
+      const dur = isDrum ? undefined : 0.60;
+      inst.play(pitchMidi, now, { duration: dur, gain: 0.9 });
+    }).catch(() => {});
+  } catch (e) {}
 }
 
 
@@ -1719,7 +1857,7 @@ function getActiveInstrument() {
     const notes = (project.tracks && project.tracks[0] && project.tracks[0].notes) ? project.tracks[0].notes : [];
     notes.forEach(note => {
       Tone.Transport.schedule((time) => {
-        const dur = (activeTrackId === "drums") ? 0.12 : lengthToSeconds(note.length, project.bpm);
+        const dur = (activeTrackId === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
         const g   = (activeTrackId === "drums") ? 1.0  : 0.9;
         instForTrack.play(
           pitchToMidi(note.pitch),
@@ -1742,7 +1880,7 @@ function getActiveInstrument() {
       const notes = (part.tracks[tid] && part.tracks[tid].notes) ? part.tracks[tid].notes : [];
       notes.forEach(note => {
         Tone.Transport.schedule((time) => {
-          const dur = (tid === "drums") ? 0.12 : lengthToSeconds(note.length, project.bpm);
+          const dur = (tid === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
           const g   = (tid === "drums") ? 1.0  : 0.9;
           instForTrack.play(
             pitchToMidi(note.pitch),
@@ -1753,6 +1891,81 @@ function getActiveInstrument() {
       });
     });
   }
+
+  
+    // =========================
+    // Stage 4: Chord Auto-Play (Keys only, from Chord Track)
+    // =========================
+    try {
+      const part = project.parts[project.currentPartId];
+      if (part) {
+        ensurePartChords(part);
+        ensurePartTracks(part);
+        const keysTrack = part.tracks["keys"];
+
+        // Pattern:
+        // - halfbar: 1 stab per half-bar (2-beat feel)
+        // - beat4 : stab on each beat (4-beat feel)  => 2 stabs per half-bar
+        // - arp8  : 8th-note arpeggio inside each half-bar
+        const pattern = (typeof chordRhythm === "string" && chordRhythm) ? chordRhythm : "beat4";
+
+        const beatDur = lengthToSeconds(4, project.bpm) * 0.92;   // 1 beat (quarter)
+        const halfbarDur = lengthToSeconds(8, project.bpm) * 0.92; // 2 beats
+        const eighthDur = lengthToSeconds(2, project.bpm) * 0.92; // 8th
+
+        function computeChordForSlot(degree, colStart) {
+          // Voice-leading based on existing keys notes at this position (if any)
+          let chord = [];
+          try {
+            chord = chooseVoicingWithVoiceLeading(degree, keysTrack, colStart) || [];
+          } catch (e) {
+            chord = diatonicTriad(degree, getChordCenterMidi());
+          }
+          if (!chord || chord.length === 0) chord = diatonicTriad(degree, getChordCenterMidi());
+          return chord;
+        }
+
+        for (let i = 0; i < HALF_BARS_PER_PART; i++) {
+          const slot = part.chords[i];
+          const roman = slot ? (slot.roman || "") : "";
+          if (!roman) continue;
+
+          const degree = romanToDegree(roman);
+          const colStart = i * 8; // 8 columns per half-bar
+
+          if (pattern === "halfbar") {
+            // 1 stab per half-bar
+            Tone.Transport.schedule((time) => {
+              const chord = computeChordForSlot(degree, colStart);
+              chord.forEach(m => pianoInst.play(m, time, halfbarDur, 0.85));
+            }, colToTransportPos(colStart));
+          } else if (pattern === "arp8") {
+            // 8th arpeggio: 4 notes per half-bar (0,2,4,6)
+            // Use a simple up-down shape [0,1,2,1] if triad; otherwise cycle.
+            const offsets = [0, 2, 4, 6];
+            offsets.forEach((off, idx) => {
+              Tone.Transport.schedule((time) => {
+                const chord = computeChordForSlot(degree, colStart);
+                if (!chord || chord.length === 0) return;
+                const order = [0, 1, 2, 1];
+                const pick = order[idx % order.length] % chord.length;
+                const midi = chord[pick];
+                pianoInst.play(midi, time, eighthDur, 0.85);
+              }, colToTransportPos(colStart + off));
+            });
+          } else {
+            // Default: 4-beat feel (stab each beat) => 2 stabs per half-bar at 0 and 4
+            const offsets = [0, 4];
+            offsets.forEach((off) => {
+              Tone.Transport.schedule((time) => {
+                const chord = computeChordForSlot(degree, colStart + off);
+                chord.forEach(m => pianoInst.play(m, time, beatDur, 0.85));
+              }, colToTransportPos(colStart + off));
+            });
+          }
+        }
+      }
+    } catch (e) {}
 
   Tone.Transport.start();
   startPlayheadLoop();
@@ -2119,7 +2332,8 @@ if (chordPresetSel) {
   chordPresetSel.addEventListener("change", () => {
     activeChordPresetId = chordPresetSel.value || "";
     applyPresetToGridCells();
-  });
+      applyChordPresetToChordTrack();
+});
 }
 if (autoChordToggle) {
   autoChordToggle.checked = !!autoChordEnabled;
@@ -2149,6 +2363,13 @@ setCursorCol(0);
 
   // keep UI blocked until unlocked
   document.body.classList.add('needs-start');
+
+  // file:// 에서 열면 샘플 로딩(fetch)이 막힙니다.
+  try {
+    if (location.protocol === 'file:' && msg) {
+      msg.innerHTML = '⚠️ 이 파일을 더블클릭(file://)로 열면 드럼 샘플이 로드되지 않습니다.<br>VS Code <b>Live Server</b> 또는 <b>python -m http.server</b>로 실행해 주세요.';
+    }
+  } catch(e) {}
 
   let started = false;
 
