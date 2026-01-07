@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v92</title>
+  <title>My Web DAW v103</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -303,7 +303,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     </div>
   </div>
 
-  <h1>My Web DAW v92</h1>
+  <h1>My Web DAW v103</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -387,6 +387,8 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
       <option value="beat4" selected>4-beat (each beat)</option>
       <option value="arp8">Arp (8th)</option>
     </select>
+    <button id="exportWavBtn" style="height:26px; margin-left:10px;">Export WAV</button>
+
 
     <button onclick="playChord(1)">I</button>
     <button onclick="playChord(2)">ii</button>
@@ -456,7 +458,105 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
       }
     });
 
+    
     // =========================
+    // Export: Record mixdown and download (WAV if supported, else WEBM)
+    // =========================
+    async function exportAudio() {
+      try { await primeAudio(); } catch (e) {}
+
+      // Ensure we're stopped and start from bar 1
+      try { stopOnceInternal(); } catch (e) {}
+      cursorCol = 0;
+      try { updatePlayheadVisual(cursorCol); } catch (e) {}
+
+      const totalCols = HALF_BARS_PER_PART * 8; // 8 cols per half-bar
+      const durationSec = lengthToSeconds(totalCols, project.bpm) + 1.0; // + tail
+
+      // Get native AudioContext (Tone)
+      const toneCtx = (typeof Tone !== "undefined" && Tone.getContext) ? Tone.getContext() : null;
+      const ac = (toneCtx && (toneCtx.rawContext || toneCtx._context || toneCtx.context)) || null;
+      // Some Tone builds expose an OfflineAudioContext/BaseAudioContext; avoid brittle instanceof checks.
+      if (!ac || typeof ac.createMediaStreamDestination !== "function") {
+        alert("내보내기 실패: AudioContext를 찾을 수 없어요. (오디오 시작 버튼을 먼저 눌러주세요)");
+        return;
+      }
+      // Make sure the context is running (required by many browsers)
+      try { if (ac.state && ac.state !== "running" && ac.resume) await ac.resume(); } catch (e) {}
+
+      // Create a MediaStream destination for recording
+      const streamDest = ac.createMediaStreamDestination();
+
+      // Tap MASTER_NODE into recorder (captures Tone + Soundfont)
+      let master;
+      try { master = ensureMasterNode(); } catch (e) { master = null; }
+      if (!master) {
+        alert("내보내기 실패: 마스터 오디오 버스를 만들 수 없어요.");
+        return;
+      }
+      try { master.connect(streamDest); } catch (e) {}
+
+      if (!window.MediaRecorder) {
+        alert("내보내기 실패: 이 브라우저는 MediaRecorder를 지원하지 않아요.");
+        return;
+      }
+
+      // Pick best supported mime type
+      const candidates = [
+        "audio/wav",
+        "audio/webm;codecs=pcm",
+        "audio/webm;codecs=opus",
+        "audio/webm"
+      ];
+      let mimeType = "";
+      for (const c of candidates) {
+        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) { mimeType = c; break; }
+      }
+
+      const rec = new MediaRecorder(streamDest.stream, mimeType ? { mimeType } : undefined);
+      const chunks = [];
+      rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+
+      const fileStamp = new Date().toISOString().replace(/[:.]/g,"-");
+      const isWav = (mimeType || "").startsWith("audio/wav");
+
+      rec.onerror = () => {
+        alert("내보내기 중 오류가 발생했어요.");
+      };
+
+      rec.start();
+
+      // Start playback
+      await play();
+
+      // Stop after duration
+      await new Promise(res => setTimeout(res, Math.max(500, durationSec * 1000)));
+
+      try { stopOnceInternal(); } catch (e) {}
+      try { rec.stop(); } catch (e) {}
+
+      await new Promise(res => { rec.onstop = () => res(); });
+
+      const blob = new Blob(chunks, { type: mimeType || (isWav ? "audio/wav" : "audio/webm") });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = isWav ? `webdaw_${fileStamp}.wav` : `webdaw_${fileStamp}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+      if (!isWav) {
+        alert("참고: 이 브라우저는 WAV 직접 녹음을 지원하지 않아 WEBM으로 저장했어요. 필요하면 변환해서 사용하면 돼요.");
+      }
+    }
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const btn = document.getElementById("exportWavBtn");
+      if (btn) btn.addEventListener("click", exportAudio);
+    });
+// =========================
     // 프로젝트 데이터
     // =========================
     
@@ -1815,12 +1915,44 @@ function primeAudio({ retry = false } = {}) {
     function pitchToMidi(pitch) { return pitch; } // note.pitch는 이미 MIDI 번호
 
     
-    async function ensurePiano() {
+    
+    // =========================
+    // Master bus: route ALL audio (Tone + Soundfont) through one node so we can record/export.
+    // =========================
+    let MASTER_NODE = null; // native GainNode on Tone's raw AudioContext
+
+    function ensureMasterNode() {
+      if (MASTER_NODE) return MASTER_NODE;
+      const toneCtx = (typeof Tone !== "undefined" && Tone.getContext) ? Tone.getContext() : null;
+      const ac = (toneCtx && (toneCtx.rawContext || toneCtx._context || toneCtx.context)) || null;
+      if (!ac) throw new Error("No AudioContext");
+
+      // Create master gain node
+      MASTER_NODE = ac.createGain();
+      MASTER_NODE.gain.value = 1.0;
+
+      // Connect master to speakers
+      try { MASTER_NODE.connect(ac.destination); } catch (e) {}
+
+      // Route Tone's Destination into MASTER_NODE (disconnect from direct destination if possible to avoid double audio)
+      try {
+        const dest = (Tone.getDestination) ? Tone.getDestination() : Tone.Destination;
+        try { dest.disconnect(); } catch (e) {}
+        try { dest.connect(MASTER_NODE); } catch (e) {}
+      } catch (e) {
+        // Fallback: best-effort connect without disconnect
+        try { Tone.Destination.connect(MASTER_NODE); } catch (e2) {}
+      }
+
+      return MASTER_NODE;
+    }
+
+async function ensurePiano() {
       const audioCtx = Tone.getContext().rawContext;
 
       if (!pianoReadyPromise) {
         // Start fetching/decoding ASAP (does not start audio playback)
-        pianoReadyPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano").catch(() => null);
+        pianoReadyPromise = Soundfont.instrument(audioCtx, "acoustic_grand_piano", { destination: ensureMasterNode() }).catch(() => null);
       }
 
       if (!pianoInst) pianoInst = await pianoReadyPromise;
@@ -1830,7 +1962,7 @@ function primeAudio({ retry = false } = {}) {
     async function ensureOboe() {
       const audioCtx = Tone.getContext().rawContext;
       if (!oboeReadyPromise) {
-        oboeReadyPromise = Soundfont.instrument(audioCtx, "oboe").catch(() => null);
+        oboeReadyPromise = Soundfont.instrument(audioCtx, "oboe", { destination: ensureMasterNode() }).catch(() => null);
       }
       if (!oboeInst) oboeInst = await oboeReadyPromise;
       return oboeInst;
@@ -1840,7 +1972,7 @@ function primeAudio({ retry = false } = {}) {
       const audioCtx = Tone.getContext().rawContext;
       if (!bassReadyPromise) {
         // GM Fingered Bass
-        bassReadyPromise = Soundfont.instrument(audioCtx, "electric_bass_finger").catch(() => null);
+        bassReadyPromise = Soundfont.instrument(audioCtx, "electric_bass_finger", { destination: ensureMasterNode() }).catch(() => null);
       }
       if (!bassInst) bassInst = await bassReadyPromise;
       return bassInst;
@@ -2018,13 +2150,18 @@ function auditionPitch(pitchMidi) {
     // =========================
     // Stage 4: Chord Auto-Play (Keys only, from Chord Track)
     // =========================
-    if (autoChordEnabled) {
-      try {
+    try {
       const part = project.parts[project.currentPartId];
       if (part) {
         ensurePartChords(part);
         ensurePartTracks(part);
         const keysTrack = part.tracks["keys"];
+
+        // Auto Chords toggle
+        if (!autoChordEnabled) {
+          // do not schedule any chord auto-play when disabled
+        } else {
+
 
         // Pattern:
         // - halfbar: 1 stab per half-bar (2-beat feel)
@@ -2090,9 +2227,10 @@ function auditionPitch(pitchMidi) {
             });
           }
         }
+
+        }
       }
-      } catch (e) {}
-    }
+    } catch (e) {}
 
   Tone.Transport.start();
   startPlayheadLoop();
@@ -2308,12 +2446,6 @@ function chooseVoicingWithVoiceLeading(degree, track, col) {
 async function playChord(degree) {
       if (typeof viewMode !== "undefined" && viewMode === "full") return;
     try{ primeAudio(); }catch(e){}
-
-    // 코드 버튼은 항상 "키보드(건반)" 트랙에서만 작동하도록 강제
-    if (typeof activeTrackId !== "undefined" && activeTrackId !== "keys") {
-      try { switchTrack("keys"); } catch (e) {}
-    }
-
 const inst = await ensurePiano();
   const audioCtx = Tone.getContext().rawContext;
   const now = audioCtx.currentTime;
