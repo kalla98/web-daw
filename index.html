@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v91</title>
+  <title>My Web DAW v92</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -303,7 +303,7 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     </div>
   </div>
 
-  <h1>My Web DAW v91</h1>
+  <h1>My Web DAW v92</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
@@ -2018,7 +2018,8 @@ function auditionPitch(pitchMidi) {
     // =========================
     // Stage 4: Chord Auto-Play (Keys only, from Chord Track)
     // =========================
-    try {
+    if (autoChordEnabled) {
+      try {
       const part = project.parts[project.currentPartId];
       if (part) {
         ensurePartChords(part);
@@ -2090,7 +2091,8 @@ function auditionPitch(pitchMidi) {
           }
         }
       }
-    } catch (e) {}
+      } catch (e) {}
+    }
 
   Tone.Transport.start();
   startPlayheadLoop();
@@ -2306,6 +2308,12 @@ function chooseVoicingWithVoiceLeading(degree, track, col) {
 async function playChord(degree) {
       if (typeof viewMode !== "undefined" && viewMode === "full") return;
     try{ primeAudio(); }catch(e){}
+
+    // 코드 버튼은 항상 "키보드(건반)" 트랙에서만 작동하도록 강제
+    if (typeof activeTrackId !== "undefined" && activeTrackId !== "keys") {
+      try { switchTrack("keys"); } catch (e) {}
+    }
+
 const inst = await ensurePiano();
   const audioCtx = Tone.getContext().rawContext;
   const now = audioCtx.currentTime;
