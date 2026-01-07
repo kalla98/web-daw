@@ -4,7 +4,7 @@
   
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta charset="utf-8" />
-  <title>My Web DAW v74</title>
+  <title>My Web DAW v91</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 16px; }
     h1 { margin: 0 0 6px; }
@@ -303,14 +303,15 @@ body.presetActive .cell.chord { background: var(--bg-chord); }
     </div>
   </div>
 
-  <h1>My Web DAW v74</h1>
+  <h1>My Web DAW v91</h1>
   <div class="toolbar">
   <div class="trackbar" id="trackBar">
     <button class="tbtn" data-track="melody" title="Melody (편집 대상)">Melody</button>
     <button class="tbtn" data-track="keys" title="Keys (코드/건반)">Keys</button>
     <button class="tbtn" data-track="bass" title="Bass">Bass</button>
     <button class="tbtn" data-track="drums" title="Drums (드럼 UI는 다음 단계)">Drums</button>
-    <span class="pill">Selected: <span class="dot" id="trackDot" style="background:#2b7cff"></span><span id="trackLabel">melody</span></span>
+        <button class="tbtn" id="dupDrumBarBtn" title="현재 마디의 드럼을 다음 마디로 복사">Drum: 마디 복사→다음</button>
+<span class="pill">Selected: <span class="dot" id="trackDot" style="background:#2b7cff"></span><span id="trackLabel">melody</span></span>
   </div>
 
     <button onclick="play()">재생</button>
@@ -559,7 +560,17 @@ function bindTrackUI() {
   bar.querySelectorAll(".tbtn").forEach(b => {
     b.addEventListener("click", () => switchTrack(b.dataset.track));
   });
-  updateTrackUI();
+  
+  // Drum bar duplicate (current bar -> next bar)
+  const dupBtn = document.getElementById("dupDrumBarBtn");
+  if (dupBtn) {
+    dupBtn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      duplicateCurrentDrumBarToNext();
+    });
+  }
+updateTrackUI();
 }
 
 function applyBassOctaveShiftOnce() {
@@ -1051,6 +1062,42 @@ function isInCurrentKey(midi) {
     });
   }
 
+function rangesOverlap(aStart, aLen, bStart, bLen) {
+  const aEnd = aStart + Math.max(1, aLen) - 1;
+  const bEnd = bStart + Math.max(1, bLen) - 1;
+  return !(aEnd < bStart || bEnd < aStart);
+}
+
+// ✅ noteIndex의 노트가 다른 노트(같은 pitch)와 겹치면 겹치는 노트들을 삭제 (overwrite 방식)
+function removeOverlapsSamePitch(notes, noteIndex) {
+  const n = notes[noteIndex];
+  if (!n) return noteIndex;
+
+  const aStart = posToCol(n.bar, n.beat);
+  const aLen = Math.max(1, n.length);
+
+  // 뒤에서부터 지워야 index 꼬임이 적음
+  for (let i = notes.length - 1; i >= 0; i--) {
+    if (i === noteIndex) continue;
+    const m = notes[i];
+    if (!m) continue;
+    if (m.pitch !== n.pitch) continue;
+
+    const bStart = posToCol(m.bar, m.beat);
+    const bLen = Math.max(1, m.length);
+
+    if (rangesOverlap(aStart, aLen, bStart, bLen)) {
+      notes.splice(i, 1);
+      if (i < noteIndex) noteIndex--; // 앞쪽 노트가 지워지면 noteIndex 보정
+    }
+  }
+  return noteIndex;
+}
+
+
+
+
+
 
     // =========================
     // UI 엘리먼트
@@ -1064,6 +1111,56 @@ function isInCurrentKey(midi) {
 const playheadEl = document.getElementById("playhead");
 let cursorCol = 0;
     let stopArmed = false; // press Stop twice to reset to start // 0..totalCols-1 (16분음표 칸)
+
+// =========================
+// Drum helper: duplicate current bar to next bar (drums only)
+// =========================
+function duplicateCurrentDrumBarToNext() {
+  // Ensure current editor notes are saved before we edit part data
+  try { syncToPart(); } catch (e) {}
+
+  const srcBar = Math.floor(cursorCol / 16) + 1; // 1..bars
+  const dstBar = srcBar + 1;
+
+    // ✅ 다음 마디로 커서(플레이헤드) 이동해서 연타 시 2→3→4로 계속 진행되게
+  cursorCol = (dstBar - 1) * 16;   // 16 = 1마디(16분음표 16칸)
+  updatePlayheadVisual(cursorCol);
+
+  if (dstBar > project.bars) {
+    alert("마지막 마디입니다. 다음 마디로 복사할 수 없어요.");
+    return;
+  }
+
+  const part = project.parts[project.currentPartId];
+  if (!part) return;
+  ensurePartTracks(part);
+
+  const drumsTrack = part.tracks["drums"];
+  if (!drumsTrack) return;
+
+  const srcNotes = (drumsTrack.notes || []).filter(n => n.bar === srcBar);
+  // Replace destination bar contents (clean paste)
+  drumsTrack.notes = (drumsTrack.notes || []).filter(n => n.bar !== dstBar);
+
+  for (const n of srcNotes) {
+    drumsTrack.notes.push({
+      id: nextNoteId++,
+      bar: dstBar,
+      beat: n.beat,
+      length: n.length,
+      pitch: n.pitch
+    });
+  }
+
+  // If currently viewing drums, refresh editor buffer
+  if (activeTrackId === "drums") {
+    syncFromPart();
+  }
+
+  // Redraw
+  try { renderNotes(); } catch (e) {}
+  try { applyPresetToGridCells(); } catch (e) {}
+}
 let rafId = null;
 
 function colToTransportPos(col) {
@@ -1506,6 +1603,8 @@ gridEl.addEventListener("pointermove", (e) => {
     const newLen = Math.max(1, (col - dragState.startCol) + 1);
     if (newLen !== n.length) dragState.moved = true;
     n.length = newLen;
+    // ✅ 드래그로 늘리다가 기존 노트와 겹치면 기존 노트 제거
+    dragState.noteIndex = removeOverlapsSamePitch(notes, dragState.noteIndex);
     renderNotes(n.id);
     return;
   }
@@ -1528,6 +1627,7 @@ gridEl.addEventListener("pointermove", (e) => {
     n.bar = bar;
     n.beat = beat16;
     n.pitch = pitch;
+    dragState.noteIndex = removeOverlapsSamePitch(notes, dragState.noteIndex);
     renderNotes(n.id);
     return;
   }
@@ -1546,6 +1646,7 @@ gridEl.addEventListener("pointermove", (e) => {
 
     const newLen = Math.max(1, (col - dragState.startCol) + 1);
     n.length = newLen;
+    dragState.noteIndex = removeOverlapsSamePitch(notes, dragState.noteIndex);
     renderNotes(n.id);
     return;
   }
@@ -1803,6 +1904,23 @@ async function ensureDrums() {
   return drumInst;
 }
 
+// =========================
+// Mix / Gain Staging (simple)
+// - Drum samples are typically much louder than SoundFont instruments.
+// - We apply per-track gain multipliers (linear) when scheduling/previewing.
+// - This is intentionally simple (no compressor/limiter yet) to keep the code stable.
+// =========================
+const TRACK_GAIN = {
+  drums: 0.50,
+  melody: 1.50,
+  keys: 1.50,
+  bass: 1.50
+};
+
+function getTrackGain(tid) {
+  return (TRACK_GAIN && typeof TRACK_GAIN[tid] === "number") ? TRACK_GAIN[tid] : 1.0;
+}
+
 function getActiveInstrument() {
   if (activeTrackId === "drums") return ensureDrums();
   if (activeTrackId === "melody") return ensureOboe();
@@ -1817,11 +1935,13 @@ function auditionPitch(pitchMidi) {
   try {
     const audioCtx = Tone.getContext().rawContext;
     const now = audioCtx.currentTime;
-    Promise.resolve(getActiveInstrument()).then(inst => {
+	    Promise.resolve(getActiveInstrument()).then(inst => {
       if (!inst) return;
       const isDrum = (activeTrackId === "drums");
       const dur = isDrum ? undefined : 0.60;
-      inst.play(pitchMidi, now, { duration: dur, gain: 0.9 });
+	      const base = 0.90;
+	      const g = base * getTrackGain(activeTrackId);
+	      inst.play(pitchMidi, now, { duration: dur, gain: g });
     }).catch(() => {});
   } catch (e) {}
 }
@@ -1857,8 +1977,9 @@ function auditionPitch(pitchMidi) {
     const notes = (project.tracks && project.tracks[0] && project.tracks[0].notes) ? project.tracks[0].notes : [];
     notes.forEach(note => {
       Tone.Transport.schedule((time) => {
-        const dur = (activeTrackId === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
-        const g   = (activeTrackId === "drums") ? 1.0  : 0.9;
+	        const dur = (activeTrackId === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
+	        const base = (activeTrackId === "drums") ? 1.0 : 0.9;
+	        const g = base * getTrackGain(activeTrackId);
         instForTrack.play(
           pitchToMidi(note.pitch),
           time,
@@ -1880,8 +2001,9 @@ function auditionPitch(pitchMidi) {
       const notes = (part.tracks[tid] && part.tracks[tid].notes) ? part.tracks[tid].notes : [];
       notes.forEach(note => {
         Tone.Transport.schedule((time) => {
-          const dur = (tid === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
-          const g   = (tid === "drums") ? 1.0  : 0.9;
+	          const dur = (tid === "drums") ? undefined : lengthToSeconds(note.length, project.bpm);
+	          const base = (tid === "drums") ? 1.0 : 0.9;
+	          const g = base * getTrackGain(tid);
           instForTrack.play(
             pitchToMidi(note.pitch),
             time,
@@ -1936,8 +2058,9 @@ function auditionPitch(pitchMidi) {
           if (pattern === "halfbar") {
             // 1 stab per half-bar
             Tone.Transport.schedule((time) => {
-              const chord = computeChordForSlot(degree, colStart);
-              chord.forEach(m => pianoInst.play(m, time, halfbarDur, 0.85));
+	              const chord = computeChordForSlot(degree, colStart);
+	              const g = 0.90 * getTrackGain("keys");
+	              chord.forEach(m => pianoInst.play(m, time, { duration: halfbarDur, gain: g }));
             }, colToTransportPos(colStart));
           } else if (pattern === "arp8") {
             // 8th arpeggio: 4 notes per half-bar (0,2,4,6)
@@ -1949,8 +2072,9 @@ function auditionPitch(pitchMidi) {
                 if (!chord || chord.length === 0) return;
                 const order = [0, 1, 2, 1];
                 const pick = order[idx % order.length] % chord.length;
-                const midi = chord[pick];
-                pianoInst.play(midi, time, eighthDur, 0.85);
+	                const midi = chord[pick];
+	                const g = 0.90 * getTrackGain("keys");
+	                pianoInst.play(midi, time, { duration: eighthDur, gain: g });
               }, colToTransportPos(colStart + off));
             });
           } else {
@@ -1958,8 +2082,9 @@ function auditionPitch(pitchMidi) {
             const offsets = [0, 4];
             offsets.forEach((off) => {
               Tone.Transport.schedule((time) => {
-                const chord = computeChordForSlot(degree, colStart + off);
-                chord.forEach(m => pianoInst.play(m, time, beatDur, 0.85));
+	                const chord = computeChordForSlot(degree, colStart + off);
+	                const g = 0.90 * getTrackGain("keys");
+	                chord.forEach(m => pianoInst.play(m, time, { duration: beatDur, gain: g }));
               }, colToTransportPos(colStart + off));
             });
           }
@@ -2198,9 +2323,10 @@ const inst = await ensurePiano();
   const dur = 0.9;
 
   // 항상 오디션(미리듣기)
-  for (const p of chord) {
-    inst.play(p, now, { duration: dur, gain: 0.9 });
-  }
+	  const g = 0.90 * getTrackGain("keys");
+	  for (const p of chord) {
+	    inst.play(p, now, { duration: dur, gain: g });
+	  }
 
   // 정지 상태일 때만: 커서 위치에 "찍기"
   if (Tone.Transport.state !== "started") {
